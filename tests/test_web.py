@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import re
 import tempfile
 import unittest
@@ -208,12 +209,15 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("No clusters configured.", cluster.text)
 
         new_cluster = self.client.get("/clusters/new")
+        self.assertIn("Upload file", new_cluster.text)
+        self.assertIn("Paste configuration", new_cluster.text)
 
         saved = self.client.post(
             "/clusters/new",
             data={
                 "csrf_token": _csrf(new_cluster.text),
                 "name": "Production West",
+                "kubeconfig_source": "path",
                 "kubeconfig_file": str(kubeconfig),
                 "kube_context": "prod-west-readonly",
                 "api_ip": "10.20.30.40",
@@ -229,6 +233,76 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(production_west["api_ip"], "10.20.30.40")
         self.assertNotIn(b"read-only-token", self.store.db_path.read_bytes())
 
+    def test_cluster_connection_can_be_saved_from_pasted_kubeconfig(self) -> None:
+        kubeconfig = _write_kubeconfig(
+            Path(self.temp_dir.name), "prod-paste", "https://paste.example:6443", "paste.kubeconfig"
+        )
+        contents = kubeconfig.read_text(encoding="utf-8")
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        new_cluster = self.client.get("/clusters/new")
+
+        saved = self.client.post(
+            "/clusters/new",
+            data={
+                "csrf_token": _csrf(new_cluster.text),
+                "name": "Pasted cluster",
+                "kubeconfig_source": "paste",
+                "kubeconfig_text": contents,
+                "kube_context": "prod-paste",
+            },
+            follow_redirects=True,
+        )
+
+        cluster = self.store.first_cluster()
+        self.assertIsNotNone(cluster)
+        stored_file = Path(cluster["kubeconfig_file"])
+        self.assertEqual(stored_file.parent, Path(self.temp_dir.name) / "kubeconfigs")
+        self.assertEqual(stored_file.read_text(encoding="utf-8"), contents)
+        self.assertNotIn("read-only-token", saved.text)
+        self.assertNotIn(b"read-only-token", self.store.db_path.read_bytes())
+
+        removal = self.client.get(f"/clusters/{cluster['id']}/remove")
+        self.client.post(
+            f"/clusters/{cluster['id']}/remove",
+            data={"csrf_token": _csrf(removal.text)},
+            follow_redirects=True,
+        )
+        self.assertFalse(stored_file.exists())
+
+    def test_cluster_connection_can_be_saved_from_uploaded_kubeconfig(self) -> None:
+        kubeconfig = _write_kubeconfig(
+            Path(self.temp_dir.name), "prod-upload", "https://upload.example:6443", "upload.kubeconfig"
+        )
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        new_cluster = self.client.get("/clusters/new")
+
+        saved = self.client.post(
+            "/clusters/new",
+            data={
+                "csrf_token": _csrf(new_cluster.text),
+                "name": "Uploaded cluster",
+                "kubeconfig_source": "upload",
+                "kubeconfig_upload": (io.BytesIO(kubeconfig.read_bytes()), "production.yaml"),
+                "kube_context": "prod-upload",
+            },
+            follow_redirects=True,
+        )
+
+        self.assertIn("Cluster connection saved.", saved.text)
+        cluster = self.store.first_cluster()
+        self.assertIsNotNone(cluster)
+        self.assertTrue(Path(cluster["kubeconfig_file"]).is_file())
+        self.assertEqual(cluster["endpoint"], "https://upload.example:6443")
+        self.assertNotIn(b"read-only-token", self.store.db_path.read_bytes())
+
     def test_cluster_connection_rejects_missing_and_unsafe_kubeconfig_files(self) -> None:
         login = self.client.get("/login")
         self.client.post(
@@ -242,6 +316,7 @@ class DashboardTests(unittest.TestCase):
             data={
                 "csrf_token": _csrf(cluster.text),
                 "name": "Invalid",
+                "kubeconfig_source": "path",
                 "kubeconfig_file": "/does/not/exist",
                 "kube_context": "missing",
                 "api_ip": "not-an-ip",
@@ -259,12 +334,28 @@ class DashboardTests(unittest.TestCase):
             data={
                 "csrf_token": _csrf(invalid.text),
                 "name": "Unsafe",
+                "kubeconfig_source": "path",
                 "kubeconfig_file": str(unsafe_kubeconfig),
                 "kube_context": "unsafe",
             },
             follow_redirects=True,
         )
         self.assertIn("exec or auth-provider", unsafe.text)
+
+        pasted = self.client.post(
+            "/clusters/new",
+            data={
+                "csrf_token": _csrf(unsafe.text),
+                "name": "Unsafe pasted",
+                "kubeconfig_source": "paste",
+                "kubeconfig_text": unsafe_kubeconfig.read_text(encoding="utf-8"),
+                "kube_context": "unsafe",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn("exec or auth-provider", pasted.text)
+        self.assertNotIn("credential-helper", pasted.text)
+        self.assertFalse((Path(self.temp_dir.name) / "kubeconfigs").exists())
 
     def test_cluster_can_be_edited_and_removed_from_the_dashboard(self) -> None:
         kubeconfig = _write_kubeconfig(
@@ -306,6 +397,7 @@ class DashboardTests(unittest.TestCase):
             data={
                 "csrf_token": _csrf(edit.text),
                 "name": "Production West Updated",
+                "kubeconfig_source": "path",
                 "kubeconfig_file": str(kubeconfig),
                 "kube_context": "west-readonly",
                 "api_ip": "",

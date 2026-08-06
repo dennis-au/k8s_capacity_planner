@@ -137,19 +137,27 @@ def inspect_kubeconfig(
     if not path.is_file():
         raise ValueError("Kubeconfig file must point to a readable mounted file.")
     try:
-        raw_config = safe_load(path.read_text(encoding="utf-8"))
-        contexts, active_context = kube_config.list_kube_config_contexts(config_file=str(path))
+        contents = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise ValueError("Kubeconfig file is invalid or unreadable.") from exc
+    return inspect_kubeconfig_text(contents, context, api_ip)
+
+
+def inspect_kubeconfig_text(
+    contents: str, context: str | None = None, api_ip: str | None = None
+) -> KubeconfigDetails:
+    try:
+        raw_config = safe_load(contents)
     except Exception as exc:
         raise ValueError("Kubeconfig file is invalid or unreadable.") from exc
     if not isinstance(raw_config, dict):
         raise ValueError("Kubeconfig file is invalid or unreadable.")
-    selected_name = context or (active_context or {}).get("name")
+    selected_name = context or raw_config.get("current-context")
     if not isinstance(selected_name, str) or not selected_name:
         raise ValueError("Kubeconfig must define a current context or specify one explicitly.")
-    selected = next((entry for entry in contexts if entry.get("name") == selected_name), None)
-    if selected is None:
+    context_data = _kubeconfig_entry(raw_config.get("contexts"), "context", selected_name)
+    if context_data is None:
         raise ValueError(f"Kubeconfig context {selected_name!r} was not found.")
-    context_data = selected.get("context") or {}
     cluster_name = context_data.get("cluster")
     user_name = context_data.get("user")
     if not isinstance(cluster_name, str) or not isinstance(user_name, str):

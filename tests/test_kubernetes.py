@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from kubernetes import client
 
-from kcp.kubernetes import KubernetesCollector, inspect_kubeconfig, pod_qos, pod_resources
+from kcp.kubernetes import KubernetesCollector, inspect_kubeconfig, inspect_kubeconfig_text, pod_qos, pod_resources
 
 
 class KubernetesNormalizationTests(unittest.TestCase):
@@ -70,6 +70,14 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(details.context, "production")
         self.assertEqual(details.endpoint, "https://10.20.30.40:6443")
         self.assertEqual(details.tls_server_name, "production.darksite.local")
+
+    def test_kubeconfig_text_uses_current_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kubeconfig = _write_kubeconfig(Path(temp_dir), context="production")
+            details = inspect_kubeconfig_text(kubeconfig.read_text(encoding="utf-8"))
+
+        self.assertEqual(details.context, "production")
+        self.assertEqual(details.endpoint, "https://production.darksite.local:6443")
 
     def test_kubeconfig_rejects_exec_authentication_and_insecure_tls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

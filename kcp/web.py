@@ -15,7 +15,8 @@ from markupsafe import Markup
 from kcp.allocation import build_allocation_plan
 from kcp.config import RuntimeConfig
 from kcp.docs import DocumentRegistry
-from kcp.kubernetes import KubernetesCollector, inspect_kubeconfig
+from kcp.kubeconfig_files import MAX_KUBECONFIG_BYTES, KubeconfigFiles
+from kcp.kubernetes import KubernetesCollector, inspect_kubeconfig, inspect_kubeconfig_text
 from kcp.service import CollectionService
 from kcp.store import Store
 
@@ -31,6 +32,7 @@ def create_app(
 ) -> Flask:
     store = store or Store(config.db_path)
     store.migrate()
+    kubeconfig_files = KubeconfigFiles(config.db_path.parent / "kubeconfigs")
     docs = DocumentRegistry(config.docs_dir)
     collector_factory = collector_factory or _collector_factory(store)
     service = CollectionService(config, store, docs, collector_factory)
@@ -43,10 +45,11 @@ def create_app(
         SESSION_COOKIE_SECURE=not config.insecure_http,
         SESSION_COOKIE_SAMESITE="Lax",
         PERMANENT_SESSION_LIFETIME=8 * 60 * 60,
-        MAX_CONTENT_LENGTH=32 * 1024,
+        MAX_CONTENT_LENGTH=MAX_KUBECONFIG_BYTES,
     )
     app.extensions["kcp_store"] = store
     app.extensions["kcp_docs"] = docs
+    app.extensions["kcp_kubeconfig_files"] = kubeconfig_files
     app.extensions["kcp_service"] = service
 
     @app.before_request
@@ -144,10 +147,13 @@ def create_app(
         if request.method == "POST":
             _validate_csrf()
             form = _cluster_form_values()
+            imported_file: str | None = None
             try:
-                normalized = _validate_cluster_form(form)
+                normalized, imported_file = _validate_cluster_form(form, kubeconfig_files)
                 cluster = store.create_cluster(**normalized)
             except ValueError as exc:
+                if imported_file:
+                    kubeconfig_files.remove(imported_file)
                 flash(str(exc), "error")
                 return _render("Add cluster", _CLUSTER_FORM_TEMPLATE, cluster=None, form=form)
             session["active_cluster_id"] = cluster["id"]
@@ -160,16 +166,24 @@ def create_app(
         cluster = store.get_cluster(cluster_id)
         if cluster is None:
             abort(404)
+        previous_kubeconfig_file = str(cluster["kubeconfig_file"])
         form = _cluster_form(cluster)
         if request.method == "POST":
             _validate_csrf()
             form = _cluster_form_values()
+            imported_file: str | None = None
             try:
-                normalized = _validate_cluster_form(form)
+                normalized, imported_file = _validate_cluster_form(
+                    form, kubeconfig_files, existing_file=previous_kubeconfig_file
+                )
                 cluster = store.update_cluster(cluster_id, **normalized)
             except ValueError as exc:
+                if imported_file:
+                    kubeconfig_files.remove(imported_file)
                 flash(str(exc), "error")
                 return _render("Edit cluster", _CLUSTER_FORM_TEMPLATE, cluster=cluster, form=form)
+            if imported_file or normalized["kubeconfig_file"] != previous_kubeconfig_file:
+                kubeconfig_files.remove(previous_kubeconfig_file)
             flash("Cluster connection saved.", "success")
             return redirect(url_for("edit_cluster", cluster_id=cluster_id))
         return _render("Edit cluster", _CLUSTER_FORM_TEMPLATE, cluster=cluster, form=form)
@@ -183,6 +197,7 @@ def create_app(
             _validate_csrf()
             if not store.delete_cluster(cluster_id):
                 abort(404)
+            kubeconfig_files.remove(str(cluster["kubeconfig_file"]))
             if session.get("active_cluster_id") == cluster_id:
                 session.pop("active_cluster_id", None)
             flash("Cluster connection and stored reports removed.", "success")
@@ -369,22 +384,56 @@ def _active_cluster(store: Store) -> dict[str, Any] | None:
 def _cluster_form_values() -> dict[str, str]:
     return {
         "name": request.form.get("name", "").strip(),
+        "kubeconfig_source": request.form.get("kubeconfig_source", "path").strip(),
         "kubeconfig_file": request.form.get("kubeconfig_file", "").strip(),
+        "kubeconfig_text": request.form.get("kubeconfig_text", ""),
         "kube_context": request.form.get("kube_context", "").strip(),
         "api_ip": request.form.get("api_ip", "").strip(),
     }
 
 
-def _validate_cluster_form(form: dict[str, str]) -> dict[str, str]:
-    kubeconfig_file = _readable_file(form["kubeconfig_file"], "Kubeconfig")
-    details = inspect_kubeconfig(kubeconfig_file, form["kube_context"] or None, form["api_ip"] or None)
-    return {
+def _validate_cluster_form(
+    form: dict[str, str], kubeconfig_files: KubeconfigFiles, existing_file: str | None = None
+) -> tuple[dict[str, str], str | None]:
+    source = form["kubeconfig_source"]
+    imported_file: str | None = None
+    if source == "existing":
+        if not existing_file:
+            raise ValueError("Choose a kubeconfig source.")
+        kubeconfig_file = _readable_file(existing_file, "Existing kubeconfig")
+        details = inspect_kubeconfig(kubeconfig_file, form["kube_context"] or None, form["api_ip"] or None)
+    elif source == "path":
+        kubeconfig_file = _readable_file(form["kubeconfig_file"], "Kubeconfig")
+        details = inspect_kubeconfig(kubeconfig_file, form["kube_context"] or None, form["api_ip"] or None)
+    elif source == "paste":
+        details = inspect_kubeconfig_text(form["kubeconfig_text"], form["kube_context"] or None, form["api_ip"] or None)
+        imported_file = kubeconfig_files.save_text(form["kubeconfig_text"])
+        kubeconfig_file = imported_file
+    elif source == "upload":
+        contents = _uploaded_kubeconfig_text()
+        details = inspect_kubeconfig_text(contents, form["kube_context"] or None, form["api_ip"] or None)
+        imported_file = kubeconfig_files.save_text(contents)
+        kubeconfig_file = imported_file
+    else:
+        raise ValueError("Choose a kubeconfig source.")
+    normalized = {
         "name": form["name"],
         "kubeconfig_file": kubeconfig_file,
         "kube_context": details.context,
         "endpoint": details.endpoint,
         "api_ip": form["api_ip"],
     }
+    return normalized, imported_file
+
+
+def _uploaded_kubeconfig_text() -> str:
+    uploaded = request.files.get("kubeconfig_upload")
+    if uploaded is None or not uploaded.filename:
+        raise ValueError("Choose a kubeconfig file to upload.")
+    try:
+        return uploaded.read().decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("Kubeconfig upload must be a UTF-8 YAML file.") from exc
 
 
 def _readable_file(value: str, label: str) -> str:
@@ -400,13 +449,22 @@ def _readable_file(value: str, label: str) -> str:
 
 
 def _empty_cluster_form() -> dict[str, str]:
-    return {"name": "", "kubeconfig_file": "", "kube_context": "", "api_ip": ""}
+    return {
+        "name": "",
+        "kubeconfig_source": "upload",
+        "kubeconfig_file": "",
+        "kubeconfig_text": "",
+        "kube_context": "",
+        "api_ip": "",
+    }
 
 
 def _cluster_form(cluster: dict[str, Any]) -> dict[str, str]:
     return {
         "name": str(cluster["name"]),
+        "kubeconfig_source": "existing",
         "kubeconfig_file": str(cluster["kubeconfig_file"]),
+        "kubeconfig_text": "",
         "kube_context": str(cluster["kube_context"]),
         "api_ip": str(cluster["api_ip"]),
     }
@@ -553,7 +611,7 @@ _HISTORY_TEMPLATE = """<table><thead><tr><th>ID</th><th>Collected</th><th>Kubern
 
 _CLUSTERS_TEMPLATE = """<section><div class="section-heading"><div><h2>Configured clusters</h2><p>Snapshots, findings, and exports remain isolated for each connection.</p></div><a class="button-link" href="{{ url_for('new_cluster') }}">Add cluster</a></div><table class="cluster-table"><thead><tr><th>Cluster</th><th>Context</th><th>API endpoint</th><th>Last snapshot</th><th>Status</th><th>Actions</th></tr></thead><tbody>{% for cluster in clusters %}<tr><td><a href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">{{ cluster.name }}</a></td><td>{{ cluster.kube_context if not cluster.legacy_connection else 'Update required' }}</td><td>{{ cluster.endpoint or 'Unavailable' }}</td><td>{{ cluster.last_collected_at or 'Not collected' }}</td><td>{% if active_cluster and cluster.id == active_cluster.id %}<span class="badge info">Active</span>{% else %}<form class="inline-form" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="cluster_id" value="{{ cluster.id }}"><input type="hidden" name="next" value="{{ url_for('overview') }}"><button class="quiet" type="submit">Use</button></form>{% endif %}</td><td><div class="table-actions"><a class="quiet-link" href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">Edit</a><a class="quiet-link danger-link" href="{{ url_for('remove_cluster', cluster_id=cluster.id) }}">Remove</a></div></td></tr>{% else %}<tr><td colspan="6">No clusters configured.</td></tr>{% endfor %}</tbody></table></section>"""
 
-_CLUSTER_FORM_TEMPLATE = """<div class="cluster-layout">{% if cluster %}<section class="cluster-summary"><p class="eyebrow">Cluster connection</p><h2>{{ cluster.name }}</h2><dl><dt>API endpoint</dt><dd>{{ cluster.endpoint or 'Unavailable until updated' }}</dd><dt>Kubeconfig context</dt><dd>{{ cluster.kube_context or 'Update required' }}</dd><dt>API IP</dt><dd>{{ cluster.api_ip or 'Kubeconfig server' }}</dd></dl>{% if cluster.legacy_connection %}<p class="notice warning">Update this connection with a kubeconfig before the next collection.</p>{% endif %}<p><a href="{{ url_for('clusters') }}">Back to clusters</a></p></section>{% else %}<section class="cluster-summary"><p class="eyebrow">New connection</p><h2>Add Kubernetes cluster</h2></section>{% endif %}<section class="connection-form"><p class="eyebrow">Read-only connection</p><h2>{{ 'Update cluster connection' if cluster else 'Connection details' }}</h2><form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="cluster-name">Cluster name<input id="cluster-name" name="name" value="{{ form.name }}" maxlength="64" required></label><label for="kubeconfig-file">Kubeconfig file<input id="kubeconfig-file" name="kubeconfig_file" value="{{ form.kubeconfig_file }}" placeholder="/run/kcp/clusters/production.kubeconfig" required></label><label for="kube-context">Kubeconfig context<input id="kube-context" name="kube_context" value="{{ form.kube_context }}" placeholder="Current context"></label><label for="api-ip">Kubernetes API IP<input id="api-ip" name="api_ip" value="{{ form.api_ip }}" inputmode="decimal" placeholder="10.20.30.40"></label><button type="submit">{{ 'Save cluster' if cluster else 'Add cluster' }}</button></form></section></div>"""
+_CLUSTER_FORM_TEMPLATE = """<div class="cluster-layout">{% if cluster %}<section class="cluster-summary"><p class="eyebrow">Cluster connection</p><h2>{{ cluster.name }}</h2><dl><dt>API endpoint</dt><dd>{{ cluster.endpoint or 'Unavailable until updated' }}</dd><dt>Kubeconfig context</dt><dd>{{ cluster.kube_context or 'Update required' }}</dd><dt>API IP</dt><dd>{{ cluster.api_ip or 'Kubeconfig server' }}</dd></dl>{% if cluster.legacy_connection %}<p class="notice warning">Update this connection with a kubeconfig before the next collection.</p>{% endif %}<p><a href="{{ url_for('clusters') }}">Back to clusters</a></p></section>{% else %}<section class="cluster-summary"><p class="eyebrow">New connection</p><h2>Add Kubernetes cluster</h2></section>{% endif %}<section class="connection-form"><p class="eyebrow">Read-only connection</p><h2>{{ 'Update cluster connection' if cluster else 'Connection details' }}</h2><form method="post" enctype="multipart/form-data" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="cluster-name">Cluster name<input id="cluster-name" name="name" value="{{ form.name }}" maxlength="64" required></label><fieldset class="kubeconfig-source"><legend>Kubeconfig source</legend>{% if cluster %}<label><input type="radio" name="kubeconfig_source" value="existing" {% if form.kubeconfig_source == 'existing' %}checked{% endif %}>Use current configuration</label>{% endif %}<label><input type="radio" name="kubeconfig_source" value="upload" {% if form.kubeconfig_source == 'upload' %}checked{% endif %}>Upload file</label><label><input type="radio" name="kubeconfig_source" value="paste" {% if form.kubeconfig_source == 'paste' %}checked{% endif %}>Paste configuration</label><label><input type="radio" name="kubeconfig_source" value="path" {% if form.kubeconfig_source == 'path' %}checked{% endif %}>Use mounted file</label></fieldset><div class="kubeconfig-inputs"><label for="kubeconfig-upload">Kubeconfig file<input id="kubeconfig-upload" name="kubeconfig_upload" type="file" accept=".yaml,.yml,text/yaml,application/x-yaml,text/plain"></label><label for="kubeconfig-text" class="kubeconfig-paste">Paste kubeconfig<textarea id="kubeconfig-text" name="kubeconfig_text" spellcheck="false" placeholder="apiVersion: v1"></textarea></label><label for="kubeconfig-file">Mounted kubeconfig file<input id="kubeconfig-file" name="kubeconfig_file" value="{{ form.kubeconfig_file }}" placeholder="/run/kcp/clusters/production.kubeconfig"></label></div><label for="kube-context">Kubeconfig context<input id="kube-context" name="kube_context" value="{{ form.kube_context }}" placeholder="Current context"></label><label for="api-ip">Kubernetes API IP<input id="api-ip" name="api_ip" value="{{ form.api_ip }}" inputmode="decimal" placeholder="10.20.30.40"></label><button type="submit">{{ 'Save cluster' if cluster else 'Add cluster' }}</button></form></section></div>"""
 
 _CLUSTER_REMOVE_TEMPLATE = """<section class="remove-panel"><p class="eyebrow">Cluster connection</p><h2>Remove {{ cluster.name }}?</h2><p>Removing this cluster also removes its stored capacity reports. This cannot be undone.</p><dl><dt>API endpoint</dt><dd>{{ cluster.endpoint }}</dd><dt>Kubeconfig context</dt><dd>{{ cluster.kube_context }}</dd></dl><form class="remove-actions" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><a class="quiet-link" href="{{ url_for('clusters') }}">Cancel</a><button class="danger" type="submit">Remove cluster</button></form></section>"""
 

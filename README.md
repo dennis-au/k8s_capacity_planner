@@ -59,7 +59,7 @@ Prepare these files on the dashboard host:
 - Bootstrap administrator password file with at least 12 characters.
 - A writable data directory for the SQLite database and session key.
 
-Create an empty `/srv/kcp/clusters` directory now. After signing in, add a cluster from the **Clusters** screen by entering the path to its mounted kubeconfig, for example `/run/kcp/clusters/production.kubeconfig`.
+The `/srv/kcp/clusters` mount is optional. After signing in, add a cluster from the **Clusters** screen by uploading a kubeconfig, pasting its YAML, or entering the path to a mounted kubeconfig such as `/run/kcp/clusters/production.kubeconfig`.
 
 ```sh
 docker run --detach --name kcp --restart unless-stopped \
@@ -98,13 +98,13 @@ Open `https://<dashboard-host>:8443` and use `https://<dashboard-host>:8443/heal
 
 KCP supports multiple Kubernetes API endpoints per dashboard deployment. The **Clusters** screen lets the local administrator add, select, and update read-only connections after signing in. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while manual refresh collects only the selected cluster.
 
-For every added cluster, mount its kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
+For a mounted kubeconfig, mount the kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. Uploaded and pasted kubeconfigs should include the credentials and CA data they need. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
 
-KCP stores only connection metadata in SQLite; it never stores kubeconfig, token, certificate, or private-key contents. It accepts static token, token-file, and client-certificate credentials, and rejects `exec`, `auth-provider`, proxy, and insecure-TLS kubeconfig settings. Existing token/CA connections remain visible with their historical reports, but must be updated with a kubeconfig before further collection.
+KCP stores connection metadata in SQLite. Uploaded and pasted kubeconfigs are stored as local files in `/srv/kcp/data/kubeconfigs`; their contents are not written to SQLite. Mounted kubeconfigs remain external to KCP. It accepts static token, token-file, and client-certificate credentials, and rejects `exec`, `auth-provider`, proxy, and insecure-TLS kubeconfig settings. Existing token/CA connections remain visible with their historical reports, but must be updated with a kubeconfig before further collection.
 
 ## Backup and Restore
 
-Stop the container before backup or restore so SQLite's main database and WAL files remain consistent. Copy the complete `/srv/kcp/data` directory, including `kcp.sqlite3`, `kcp.sqlite3-wal`, `kcp.sqlite3-shm`, and `kcp.session.key`. Restore by stopping KCP, replacing the complete directory with the backup, ensuring Docker can write to it, then restarting the container.
+Stop the container before backup or restore so SQLite's main database and WAL files remain consistent. Copy the complete `/srv/kcp/data` directory, including `kcp.sqlite3`, `kcp.sqlite3-wal`, `kcp.sqlite3-shm`, `kcp.session.key`, and `kubeconfigs/`. Restore by stopping KCP, replacing the complete directory with the backup, ensuring Docker can write to it, then restarting the container.
 
 KCP automatically removes snapshots older than 90 days. Export JSON, Markdown, or HTML from the History screen before they expire.
 
