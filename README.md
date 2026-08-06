@@ -1,6 +1,6 @@
 # Kubernetes Capacity Planner
 
-KCP is a dark-site Kubernetes capacity dashboard. It runs outside the target cluster, uses mounted kubeconfig files, stores reports in local SQLite, and bundles Kubernetes v1.36 guidance into the application image.
+KCP is a dark-site Kubernetes capacity dashboard. It runs outside the target cluster, lets an authenticated administrator add mounted kubeconfig files, stores reports in local SQLite, and bundles Kubernetes v1.36 guidance into the application image.
 
 At runtime KCP does not fetch public documentation, load CDN assets, send telemetry, or make browser-side API calls. Its only network destination is the configured in-site Kubernetes API endpoint.
 
@@ -25,7 +25,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.0 .
+docker build -t kcp:0.1.1 .
 ```
 
 ## Cluster Access
@@ -43,10 +43,11 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 Prepare these files on the dashboard host:
 
-- A kubeconfig and any referenced credential or CA files.
 - TLS certificate and key for the dashboard endpoint.
 - Bootstrap administrator password file with at least 12 characters.
 - A writable data directory owned by container UID `10001`.
+
+Create an empty `/srv/kcp/clusters` directory now. After signing in, add a cluster from the **Clusters** screen by entering the path to its mounted kubeconfig, for example `/run/kcp/clusters/production.kubeconfig`.
 
 ```sh
 docker run --detach --name kcp --restart unless-stopped \
@@ -57,9 +58,6 @@ docker run --detach --name kcp --restart unless-stopped \
   --volume /srv/kcp/tls.crt:/run/kcp/tls.crt:ro \
   --volume /srv/kcp/tls.key:/run/kcp/tls.key:ro \
   --volume /srv/kcp/admin-password:/run/kcp/admin-password:ro \
-  --env KCP_KUBECONFIG_FILE=/run/kcp/clusters/production.kubeconfig \
-  --env KCP_KUBE_CONTEXT=production-readonly \
-  --env KCP_KUBE_API_IP=10.20.30.40 \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_REFRESH_INTERVAL=1h \
   --env KCP_RETENTION_DAYS=90 \
@@ -67,7 +65,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.0
+  kcp:0.1.1
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -78,7 +76,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.0 \
+  --entrypoint python kcp:0.1.1 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
@@ -86,7 +84,7 @@ Open `https://<dashboard-host>:8443` and use `https://<dashboard-host>:8443/heal
 
 ## Cluster Connections
 
-KCP supports multiple Kubernetes API endpoints per dashboard deployment. The environment variables configure the first cluster at bootstrap; the **Clusters** screen lets the local administrator add, select, and update additional read-only connections. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while manual refresh collects only the selected cluster.
+KCP supports multiple Kubernetes API endpoints per dashboard deployment. The **Clusters** screen lets the local administrator add, select, and update read-only connections after signing in. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while manual refresh collects only the selected cluster.
 
 For every added cluster, mount its kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
 

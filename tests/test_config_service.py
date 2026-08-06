@@ -15,14 +15,10 @@ from kcp.store import Store
 
 
 class ConfigAndServiceTests(unittest.TestCase):
-    def test_load_runtime_config_requires_files_and_creates_session_secret(self) -> None:
+    def test_load_runtime_config_does_not_require_cluster_credentials_and_creates_session_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            kubeconfig = _write_kubeconfig(root)
             environment = {
-                "KCP_KUBECONFIG_FILE": str(kubeconfig),
-                "KCP_KUBE_CONTEXT": "darksite-readonly",
-                "KCP_KUBE_API_IP": "10.20.30.40",
                 "KCP_DB_PATH": str(root / "kcp.sqlite3"),
                 "KCP_REFRESH_INTERVAL": "1h",
                 "KCP_RETENTION_DAYS": "90",
@@ -32,9 +28,7 @@ class ConfigAndServiceTests(unittest.TestCase):
 
             self.assertEqual(config.refresh_seconds, 3600)
             self.assertEqual(config.retention_days, 90)
-            self.assertEqual(config.kubeconfig_file, kubeconfig)
-            self.assertEqual(config.kube_context, "darksite-readonly")
-            self.assertEqual(config.kube_api_ip, "10.20.30.40")
+            self.assertEqual(config.db_path, root / "kcp.sqlite3")
             self.assertTrue((root / "kcp.session.key").is_file())
 
     def test_collection_persists_snapshot_and_prunes_expired_history(self) -> None:
@@ -55,9 +49,6 @@ class ConfigAndServiceTests(unittest.TestCase):
                 cluster_id=cluster["id"],
             )
             config = RuntimeConfig(
-                kubeconfig_file=root / "kubeconfig",
-                kube_context=None,
-                kube_api_ip=None,
                 db_path=root / "kcp.sqlite3",
                 docs_dir=Path("kcp/assets/k8s-docs"),
                 refresh_seconds=3600,
@@ -82,9 +73,6 @@ class ConfigAndServiceTests(unittest.TestCase):
             east = store.create_cluster("East", "/run/east.kubeconfig", "east", "https://east.example")
             west = store.create_cluster("West", "/run/west.kubeconfig", "west", "https://west.example")
             config = RuntimeConfig(
-                kubeconfig_file=root / "kubeconfig",
-                kube_context=None,
-                kube_api_ip=None,
                 db_path=root / "kcp.sqlite3",
                 docs_dir=Path("kcp/assets/k8s-docs"),
                 refresh_seconds=3600,
@@ -107,9 +95,6 @@ class ConfigAndServiceTests(unittest.TestCase):
             east = store.create_cluster("East", "/run/east.kubeconfig", "east", "https://east.example")
             west = store.create_cluster("West", "/run/west.kubeconfig", "west", "https://west.example")
             config = RuntimeConfig(
-                kubeconfig_file=root / "kubeconfig",
-                kube_context=None,
-                kube_api_ip=None,
                 db_path=root / "kcp.sqlite3",
                 docs_dir=Path("kcp/assets/k8s-docs"),
                 refresh_seconds=3600,

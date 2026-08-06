@@ -8,9 +8,6 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    kubeconfig_file: Path
-    kube_context: str | None
-    kube_api_ip: str | None
     db_path: Path
     docs_dir: Path
     refresh_seconds: int
@@ -21,15 +18,9 @@ class RuntimeConfig:
 
 
 def load_runtime_config(insecure_http: bool = False) -> RuntimeConfig:
-    kubeconfig_file = _required_path("KCP_KUBECONFIG_FILE")
-    kube_context = os.getenv("KCP_KUBE_CONTEXT", "").strip() or None
-    kube_api_ip = os.getenv("KCP_KUBE_API_IP", "").strip() or None
     db_path = Path(_required("KCP_DB_PATH"))
     docs_dir = Path(__file__).parent / "assets" / "k8s-docs"
     return RuntimeConfig(
-        kubeconfig_file=kubeconfig_file,
-        kube_context=kube_context,
-        kube_api_ip=kube_api_ip,
         db_path=db_path,
         docs_dir=docs_dir,
         refresh_seconds=_duration_seconds(os.getenv("KCP_REFRESH_INTERVAL", "1h")),

@@ -1,10 +1,7 @@
 #!/bin/sh
 set -eu
 
-: "${KCP_KUBECONFIG_FILE:?KCP_KUBECONFIG_FILE is required}"
 : "${KCP_DB_PATH:?KCP_DB_PATH is required}"
-
-[ -r "$KCP_KUBECONFIG_FILE" ] || { echo "KCP_KUBECONFIG_FILE is not readable" >&2; exit 1; }
 
 set -- gunicorn --workers 1 --threads 8 --worker-class gthread --timeout 60 --bind "${KCP_BIND:-0.0.0.0:8443}" --access-logfile - --error-logfile -
 

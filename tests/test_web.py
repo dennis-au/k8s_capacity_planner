@@ -48,11 +48,7 @@ class DashboardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
-        self.kubeconfig = _write_kubeconfig(root, "configured", "https://kubernetes.darksite.local:6443")
         self.config = RuntimeConfig(
-            kubeconfig_file=self.kubeconfig,
-            kube_context="configured",
-            kube_api_ip=None,
             db_path=root / "kcp.sqlite3",
             docs_dir=Path("kcp/assets/k8s-docs"),
             refresh_seconds=3600,
@@ -80,8 +76,10 @@ class DashboardTests(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No snapshots collected", response.text)
+        self.assertIn("Add a cluster", response.text)
 
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
         csrf = _csrf(response.text)
         refreshed = self.client.post("/collect", data={"csrf_token": csrf}, follow_redirects=True)
         self.assertIn("Snapshot 1 collected", refreshed.text)
@@ -99,6 +97,21 @@ class DashboardTests(unittest.TestCase):
         export = self.client.get("/exports/latest.json")
         self.assertEqual(export.status_code, 200)
         self.assertIn('"cluster_version":"v1.36.1"', export.text)
+
+    def test_first_login_has_no_cluster_until_a_kubeconfig_is_added(self) -> None:
+        login = self.client.get("/login")
+        overview = self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+            follow_redirects=True,
+        )
+
+        self.assertIn("Add a cluster", overview.text)
+        self.assertIn("Not configured", overview.text)
+        self.assertEqual(self.store.list_clusters(), [])
+
+        clusters = self.client.get("/clusters")
+        self.assertIn("No clusters configured.", clusters.text)
 
     def test_health_check_does_not_require_login(self) -> None:
         response = self.client.get("/healthz")
@@ -192,7 +205,7 @@ class DashboardTests(unittest.TestCase):
 
         cluster = self.client.get("/clusters")
         self.assertEqual(cluster.status_code, 200)
-        self.assertIn("Configured cluster", cluster.text)
+        self.assertIn("No clusters configured.", cluster.text)
 
         new_cluster = self.client.get("/clusters/new")
 
@@ -209,8 +222,8 @@ class DashboardTests(unittest.TestCase):
         )
 
         self.assertIn("Cluster connection saved.", saved.text)
-        self.assertEqual(len(self.store.list_clusters()), 2)
-        production_west = next(cluster for cluster in self.store.list_clusters() if cluster["name"] == "Production West")
+        self.assertEqual(len(self.store.list_clusters()), 1)
+        production_west = self.store.first_cluster()
         self.assertEqual(production_west["endpoint"], "https://10.20.30.40:6443")
         self.assertEqual(production_west["kube_context"], "prod-west-readonly")
         self.assertEqual(production_west["api_ip"], "10.20.30.40")
@@ -266,12 +279,6 @@ class DashboardTests(unittest.TestCase):
             "west-readonly",
             "https://west.example:6443",
         )
-        self.store.save_snapshot(
-            datetime.now(UTC),
-            "v1.36.0",
-            {"cluster": "west"},
-            cluster_id=west["id"],
-        )
 
         login = self.client.get("/login")
         overview = self.client.post(
@@ -286,6 +293,12 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertIn(f'href="/clusters/{west["id"]}"', selected.text)
         self.assertIn(f'href="/clusters/{west["id"]}/remove"', selected.text)
+        self.store.save_snapshot(
+            datetime.now(UTC),
+            "v1.36.0",
+            {"cluster": "west"},
+            cluster_id=west["id"],
+        )
 
         edit = self.client.get(f"/clusters/{west['id']}")
         updated = self.client.post(
@@ -313,7 +326,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Cluster connection and stored reports removed.", removed.text)
         self.assertIsNone(self.store.get_cluster(west["id"]))
         self.assertEqual(self.store.list_snapshots(west["id"]), [])
-        self.assertIn("Configured cluster", removed.text)
+        self.assertIn("No clusters configured.", removed.text)
 
     def test_default_collector_uses_the_saved_cluster_connection(self) -> None:
         kubeconfig = _write_kubeconfig(
@@ -339,7 +352,6 @@ class DashboardTests(unittest.TestCase):
             "west-readonly",
             "https://west.example:6443",
         )
-        configured = next(cluster for cluster in self.store.list_clusters() if cluster["name"] == "Configured cluster")
 
         login = self.client.get("/login")
         overview = self.client.post(
@@ -358,7 +370,6 @@ class DashboardTests(unittest.TestCase):
 
         self.assertIn("Snapshot 1 collected", collected.text)
         self.assertIsNotNone(self.store.latest_snapshot(west["id"]))
-        self.assertIsNone(self.store.latest_snapshot(configured["id"]))
 
         history = self.client.get("/history")
         self.assertIn("v1.36.1", history.text)
@@ -366,6 +377,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Cluster: Production West", export.text)
 
     def test_allocation_view_uses_persisted_cluster_snapshot(self) -> None:
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
         login = self.client.get("/login")
         overview = self.client.post(
             "/login",
