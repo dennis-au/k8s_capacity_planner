@@ -1,0 +1,4 @@
+Kubernetes documentation in kcp/assets/k8s-docs is imported from kubernetes.io.
+Copyright The Kubernetes Authors. Licensed under CC BY 4.0.
+The embedded manifest records each document's canonical source URL, source path,
+upstream revision, version baseline, import time, and SHA-256 checksum.

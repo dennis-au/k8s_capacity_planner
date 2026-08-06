@@ -1,0 +1,132 @@
+{
+  "documents": [
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+      "file": "resource-management.txt",
+      "id": "resource-management",
+      "sha256": "3a2172bdbf719fcc072b29a6d557393332e61d99c26173c5149c2c27cc663fc0",
+      "source_path": "content/en/docs/concepts/configuration/manage-resources-containers/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Resource Management for Pods and Containers"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/",
+      "file": "node-allocatable.txt",
+      "id": "node-allocatable",
+      "sha256": "5deaee3fac6bf62c7a232c507fe200b05942d210bb5aa18b018e75408df05c9f",
+      "source_path": "content/en/docs/tasks/administer-cluster/reserve-compute-resources/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Reserve Compute Resources for System Daemons"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/",
+      "file": "resource-metrics.txt",
+      "id": "resource-metrics",
+      "sha256": "d84cef414172275e98ff9afdd710fe7aefc1d80f7e7b81446d9afb6480da0969",
+      "source_path": "content/en/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Resource Metrics Pipeline"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/",
+      "file": "pod-qos.txt",
+      "id": "pod-qos",
+      "sha256": "a1a6e918ab30e6366e869013a95623cafaae61a041211490fdbe355e7a0b0f3e",
+      "source_path": "content/en/docs/concepts/workloads/pods/pod-qos/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Pod Quality of Service Classes"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/",
+      "file": "node-pressure-eviction.txt",
+      "id": "node-pressure-eviction",
+      "sha256": "e8b5c32618aac59c0b5adbdba1791488cabcab5317ced890d44a21ae81efdb31",
+      "source_path": "content/en/docs/concepts/scheduling-eviction/node-pressure-eviction/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Node-pressure Eviction"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/policy/resource-quotas/",
+      "file": "resource-quota.txt",
+      "id": "resource-quota",
+      "sha256": "df2a2056e9fd1d3f7b7e52db3756d2cd4df4d29c37008b1a57ae64826542d179",
+      "source_path": "content/en/docs/concepts/policy/resource-quotas/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Resource Quotas"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/policy/limit-range/",
+      "file": "limit-range.txt",
+      "id": "limit-range",
+      "sha256": "3486d627dbb72077559d05efacafe42dd6c52c64e11d63b6b5b62d3d39aad49a",
+      "source_path": "content/en/docs/concepts/policy/limit-range/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Limit Ranges"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/",
+      "file": "horizontal-pod-autoscale.txt",
+      "id": "horizontal-pod-autoscale",
+      "sha256": "8b16282b91bd636cb80c537b15c44bebb1a011c1558de58fd6c1ddb24e302825",
+      "source_path": "content/en/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Horizontal Pod Autoscaling"
+    },
+    {
+      "canonical_url": "https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/",
+      "file": "node-autoscaling.txt",
+      "id": "node-autoscaling",
+      "sha256": "94807d7986d5c33564f2af9e39e87fd41ab2c4be2780bf11a1c1a605d0a808d4",
+      "source_path": "content/en/docs/concepts/cluster-administration/node-autoscaling/index.md",
+      "source_revision": "7f8c973bcaf9d185e2d5559b38024096d0ceba3",
+      "title": "Node Autoscaling"
+    }
+  ],
+  "imported_at": "2026-08-06T02:47:34.251081+00:00",
+  "kubernetes_version": "v1.36",
+  "license": "CC BY 4.0",
+  "rules": {
+    "hpa-coverage": {
+      "document_id": "horizontal-pod-autoscale",
+      "section": "How does a HorizontalPodAutoscaler work?"
+    },
+    "limit-pressure": {
+      "document_id": "resource-management",
+      "section": "Resource limits"
+    },
+    "limit-range-coverage": {
+      "document_id": "limit-range",
+      "section": "Limits and requests"
+    },
+    "metrics-availability": {
+      "document_id": "resource-metrics",
+      "section": "Metrics API"
+    },
+    "missing-requests": {
+      "document_id": "resource-management",
+      "section": "Requests and limits"
+    },
+    "node-headroom": {
+      "document_id": "node-allocatable",
+      "section": "Node Allocatable"
+    },
+    "node-pressure": {
+      "document_id": "node-pressure-eviction",
+      "section": "Node conditions"
+    },
+    "qos-eviction": {
+      "document_id": "pod-qos",
+      "section": "Quality of Service classes"
+    },
+    "quota-pressure": {
+      "document_id": "resource-quota",
+      "section": "Compute Resource Quota"
+    },
+    "version-compatibility": {
+      "document_id": "node-autoscaling",
+      "section": "Node autoscaling"
+    }
+  },
+  "schema_version": 1,
+  "source_repository": "https://github.com/kubernetes/website"
+}

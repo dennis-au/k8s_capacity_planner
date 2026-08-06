@@ -1,0 +1,70 @@
+version: v1.36
+source_repository: https://github.com/kubernetes/website
+documents:
+  - id: resource-management
+    title: Resource Management for Pods and Containers
+    canonical_url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+    source_path: content/en/docs/concepts/configuration/manage-resources-containers/index.md
+  - id: node-allocatable
+    title: Reserve Compute Resources for System Daemons
+    canonical_url: https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/
+    source_path: content/en/docs/tasks/administer-cluster/reserve-compute-resources/index.md
+  - id: resource-metrics
+    title: Resource Metrics Pipeline
+    canonical_url: https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/
+    source_path: content/en/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/index.md
+  - id: pod-qos
+    title: Pod Quality of Service Classes
+    canonical_url: https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/
+    source_path: content/en/docs/concepts/workloads/pods/pod-qos/index.md
+  - id: node-pressure-eviction
+    title: Node-pressure Eviction
+    canonical_url: https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/
+    source_path: content/en/docs/concepts/scheduling-eviction/node-pressure-eviction/index.md
+  - id: resource-quota
+    title: Resource Quotas
+    canonical_url: https://kubernetes.io/docs/concepts/policy/resource-quotas/
+    source_path: content/en/docs/concepts/policy/resource-quotas/index.md
+  - id: limit-range
+    title: Limit Ranges
+    canonical_url: https://kubernetes.io/docs/concepts/policy/limit-range/
+    source_path: content/en/docs/concepts/policy/limit-range/index.md
+  - id: horizontal-pod-autoscale
+    title: Horizontal Pod Autoscaling
+    canonical_url: https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/
+    source_path: content/en/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/index.md
+  - id: node-autoscaling
+    title: Node Autoscaling
+    canonical_url: https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/
+    source_path: content/en/docs/concepts/cluster-administration/node-autoscaling/index.md
+rules:
+  missing-requests:
+    document_id: resource-management
+    section: Requests and limits
+  node-headroom:
+    document_id: node-allocatable
+    section: Node Allocatable
+  limit-pressure:
+    document_id: resource-management
+    section: Resource limits
+  qos-eviction:
+    document_id: pod-qos
+    section: Quality of Service classes
+  node-pressure:
+    document_id: node-pressure-eviction
+    section: Node conditions
+  quota-pressure:
+    document_id: resource-quota
+    section: Compute Resource Quota
+  limit-range-coverage:
+    document_id: limit-range
+    section: Limits and requests
+  metrics-availability:
+    document_id: resource-metrics
+    section: Metrics API
+  hpa-coverage:
+    document_id: horizontal-pod-autoscale
+    section: How does a HorizontalPodAutoscaler work?
+  version-compatibility:
+    document_id: node-autoscaling
+    section: Node autoscaling
