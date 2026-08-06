@@ -9,11 +9,11 @@
 
 **Exit criteria:** KCP's kubeconfig can authenticate to `lab110` without using administrator credentials.
 
-## Milestone 2: KCP Cluster Onboarding [ ]
+## Milestone 2: KCP Cluster Onboarding [x]
 
-- [ ] Add `lab110` in KCP using the read-only kubeconfig upload, paste, or mounted-file flow.
-- [ ] Select `lab110` as the active cluster.
-- [ ] Run **Test connection** and verify the connection log records a redacted successful result.
+- [x] Add `lab110` in KCP using the read-only kubeconfig upload, paste, or mounted-file flow.
+- [x] Select `lab110` as the active cluster.
+- [x] Run **Test connection** and verify the connection log records a redacted successful result.
 
 **Exit criteria:** The Cluster page shows `lab110`, its Kubernetes version, and a successful test result.
 

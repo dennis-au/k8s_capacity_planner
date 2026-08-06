@@ -10,6 +10,13 @@ Last updated: August 6, 2026
 - KCP's collector authenticated with the dedicated reader kubeconfig and returned `v1.36.3+k3s1`.
 - `metrics.k8s.io` is currently unavailable. This is a known partial-data condition; it must remain visible in KCP reports and must not be interpreted as zero usage.
 
+## Milestone 2: Complete
+
+- `lab110` was added through KCP's authenticated kubeconfig upload flow and retains the `kcp-lab110` context.
+- A fresh KCP session selects `lab110` as the active cluster.
+- The real KCP runtime verified the connection against `lab110` and recorded `Connected to Kubernetes v1.36.3+k3s1.`
+- The connection log contains only the action, status, timestamp, and redacted result message; it does not expose kubeconfig or token contents.
+
 ## Current Work
 
-Milestone 2: add `lab110` to KCP, select it, and verify the connection test/log workflow.
+Milestone 3: collect a real snapshot and validate data coverage and partial-data behavior.
