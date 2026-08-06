@@ -25,7 +25,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.2 .
+docker build -t kcp:0.1.3 .
 ```
 
 ## Cluster Access
@@ -41,23 +41,23 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.2` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.3` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.2-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.2-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.3-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.3-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.2-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.2-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.3-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.3-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
 
 - TLS certificate and key for the dashboard endpoint.
 - Bootstrap administrator password file with at least 12 characters.
-- A writable data directory owned by container UID `10001`.
+- A writable data directory for the SQLite database and session key.
 
 Create an empty `/srv/kcp/clusters` directory now. After signing in, add a cluster from the **Clusters** screen by entering the path to its mounted kubeconfig, for example `/run/kcp/clusters/production.kubeconfig`.
 
@@ -77,7 +77,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.2
+  kcp:0.1.3
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -88,7 +88,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.2 \
+  --entrypoint python kcp:0.1.3 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
@@ -104,7 +104,7 @@ KCP stores only connection metadata in SQLite; it never stores kubeconfig, token
 
 ## Backup and Restore
 
-Stop the container before backup or restore so SQLite's main database and WAL files remain consistent. Copy the complete `/srv/kcp/data` directory, including `kcp.sqlite3`, `kcp.sqlite3-wal`, `kcp.sqlite3-shm`, and `kcp.session.key`. Restore by stopping KCP, replacing the complete directory with the backup, checking ownership is UID `10001`, then restarting the container.
+Stop the container before backup or restore so SQLite's main database and WAL files remain consistent. Copy the complete `/srv/kcp/data` directory, including `kcp.sqlite3`, `kcp.sqlite3-wal`, `kcp.sqlite3-shm`, and `kcp.session.key`. Restore by stopping KCP, replacing the complete directory with the backup, ensuring Docker can write to it, then restarting the container.
 
 KCP automatically removes snapshots older than 90 days. Export JSON, Markdown, or HTML from the History screen before they expire.
 
