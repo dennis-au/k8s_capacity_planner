@@ -25,7 +25,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.1 .
+docker build -t kcp:0.1.2 .
 ```
 
 ## Cluster Access
@@ -40,6 +40,18 @@ kubectl -n kcp create token kcp-reader --duration=24h > kcp-reader.token
 Create a kubeconfig that references the read-only identity and cluster CA, then mount the kubeconfig and any credential or CA files it references as read-only. The dashboard never creates or changes Kubernetes objects and does not request access to Secrets.
 
 ## Dark-site Run
+
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.2` release, verify its checksum, and load it directly:
+
+```sh
+# x86_64 host
+sha256sum -c kcp-0.1.2-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.2-linux-amd64.docker.tar
+
+# ARM64 host
+sha256sum -c kcp-0.1.2-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.2-linux-arm64.docker.tar
+```
 
 Prepare these files on the dashboard host:
 
@@ -65,7 +77,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.1
+  kcp:0.1.2
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -76,7 +88,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.1 \
+  --entrypoint python kcp:0.1.2 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
