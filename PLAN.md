@@ -33,10 +33,10 @@
 
 **Exit criteria:** KCP provides evidence-based, source-cited recommendations without modifying `lab110`.
 
-## Milestone 5: Operator Acceptance [ ]
+## Milestone 5: Operator Acceptance [x]
 
-- [ ] Export the `lab110` report as JSON, Markdown, and HTML.
-- [ ] Verify that switching active clusters keeps `lab110` reports and findings isolated from other configured clusters.
-- [ ] Confirm the connection log retains test/snapshot outcomes and hides sensitive kubeconfig or API error details.
+- [x] Export the `lab110` report as JSON, Markdown, and HTML.
+- [x] Verify that switching active clusters keeps `lab110` reports and findings isolated from other configured clusters.
+- [x] Confirm the connection log retains test/snapshot outcomes and hides sensitive kubeconfig or API error details.
 
 **Exit criteria:** An operator can connect, collect, review, export, and repeat the read-only capacity assessment for `lab110` from KCP.

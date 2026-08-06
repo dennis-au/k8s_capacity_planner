@@ -568,6 +568,44 @@ class DashboardTests(unittest.TestCase):
         export = self.client.get("/exports/latest.md")
         self.assertIn("Cluster: Production West", export.text)
 
+    def test_switching_active_clusters_keeps_reports_findings_and_exports_isolated(self) -> None:
+        east = self.store.create_cluster("East", "/run/east.kubeconfig", "east", "https://east.example")
+        west = self.store.create_cluster("West", "/run/west.kubeconfig", "west", "https://west.example")
+        east_payload = _report_payload("East finding")
+        west_payload = _report_payload("West finding")
+        self.store.save_snapshot(datetime.now(UTC), "v1.36.0", east_payload, cluster_id=east["id"])
+        self.store.save_snapshot(datetime.now(UTC), "v1.36.1", west_payload, cluster_id=west["id"])
+
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+
+        east_page = self.client.get("/clusters")
+        east_selected = self.client.post(
+            "/clusters/activate",
+            data={"csrf_token": _csrf(east_page.text), "cluster_id": east["id"], "next": "/history"},
+            follow_redirects=True,
+        )
+        self.assertIn("v1.36.0", east_selected.text)
+        self.assertNotIn("v1.36.1", east_selected.text)
+        self.assertIn("East finding evidence.", self.client.get("/findings").text)
+        self.assertNotIn("West finding evidence.", self.client.get("/findings").text)
+        self.assertIn("Cluster: East", self.client.get("/exports/latest.md").text)
+
+        west_page = self.client.get("/clusters")
+        west_selected = self.client.post(
+            "/clusters/activate",
+            data={"csrf_token": _csrf(west_page.text), "cluster_id": west["id"], "next": "/history"},
+            follow_redirects=True,
+        )
+        self.assertIn("v1.36.1", west_selected.text)
+        self.assertNotIn("v1.36.0", west_selected.text)
+        self.assertIn("West finding evidence.", self.client.get("/findings").text)
+        self.assertNotIn("East finding evidence.", self.client.get("/findings").text)
+        self.assertIn("Cluster: West", self.client.get("/exports/latest.md").text)
+
     def test_allocation_view_uses_persisted_cluster_snapshot(self) -> None:
         kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
         self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
@@ -592,6 +630,33 @@ def _csrf(text: str) -> str:
     if not match:
         raise AssertionError("CSRF token missing")
     return match.group(1)
+
+
+def _report_payload(title: str) -> dict:
+    return {
+        "snapshot": {
+            "cluster_version": "v1.36.0",
+            "metrics_available": False,
+            "nodes": [],
+            "namespaces": [],
+            "workloads": [],
+            "warnings": [],
+        },
+        "findings": [
+            {
+                "severity": "info",
+                "resource": "cluster",
+                "title": title,
+                "evidence": f"{title} evidence.",
+                "recommendation": "Review the active cluster report.",
+                "source": {
+                    "document_id": "resource-management",
+                    "document_title": "Resource Management",
+                    "section": "Overview",
+                },
+            }
+        ],
+    }
 
 
 def _write_kubeconfig(root: Path, context: str, endpoint: str, filename: str = "kubeconfig", user: str = "token: read-only-token") -> Path:

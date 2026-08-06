@@ -33,6 +33,13 @@ Last updated: August 6, 2026
 - Findings and Allocation link to local documentation; the resource-metrics document displays Kubernetes baseline `v1.36` and its source revision.
 - `lab110` reports Kubernetes `v1.36.3+k3s1`, which matches the embedded `v1.36` minor baseline. The automated version-compatibility test covers the warning behavior for other minors.
 
-## Current Work
+## Milestone 5: Complete
 
-Milestone 5: validate exports, active-cluster isolation, and redacted cluster-operation history.
+- `lab110` report exports succeed as JSON, Markdown, and HTML; each reflects Kubernetes `v1.36.3+k3s1` and the active `lab110` cluster.
+- Dashboard coverage includes a passing active-cluster isolation test for History, Findings, and latest export routing.
+- The cluster edit page shows the successful real connection test and snapshots while excluding kubeconfig tokens, CA data, raw stack traces, and raw API exception details.
+- Two real `lab110` snapshots have been collected, demonstrating repeatable read-only collection.
+
+## Assessment Complete
+
+All `PROMPT.md` done-when conditions are satisfied for the `lab110` validation. The current KCP runtime at `http://127.0.0.1:5056` uses the real Kubernetes collector; the earlier fake demo runtime has been stopped.
