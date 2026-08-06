@@ -196,6 +196,56 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(invalid_csrf.status_code, 400)
         self.assertTrue(self.store.verify_admin("admin", "correct horse battery staple"))
 
+    def test_settings_page_updates_runtime_collection_policy(self) -> None:
+        self.assertEqual(self.client.get("/settings").status_code, 302)
+
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        settings = self.client.get("/settings")
+        self.assertIn("Collection settings", settings.text)
+        self.assertIn('value="60"', settings.text)
+        self.assertIn('value="90"', settings.text)
+
+        updated = self.client.post(
+            "/settings",
+            data={
+                "csrf_token": _csrf(settings.text),
+                "snapshot_interval_minutes": "30",
+                "retention_days": "180",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn("Runtime settings updated.", updated.text)
+        self.assertIn("Paused", updated.text)
+        self.assertIn('value="30"', updated.text)
+        self.assertIn('value="180"', updated.text)
+        self.assertEqual(
+            self.app.extensions["kcp_service"].runtime_settings(),
+            {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+        )
+
+        invalid = self.client.post(
+            "/settings",
+            data={
+                "csrf_token": _csrf(updated.text),
+                "schedule_enabled": "1",
+                "snapshot_interval_minutes": "1",
+                "retention_days": "180",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn("Snapshot interval must be between 15 and 1440 minutes", invalid.text)
+        self.assertIn("Paused", invalid.text)
+
+        invalid_csrf = self.client.post(
+            "/settings",
+            data={"csrf_token": "invalid", "snapshot_interval_minutes": "30", "retention_days": "180"},
+        )
+        self.assertEqual(invalid_csrf.status_code, 400)
+
     def test_cluster_connection_can_be_saved_from_the_dashboard(self) -> None:
         kubeconfig = _write_kubeconfig(
             Path(self.temp_dir.name), "prod-west-readonly", "https://kubernetes.prod.example:6443", "prod-west.kubeconfig"

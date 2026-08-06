@@ -117,6 +117,30 @@ class ConfigAndServiceTests(unittest.TestCase):
             self.assertEqual(log["status"], "error")
             self.assertEqual(log["message"], "Connection test failed.")
 
+    def test_runtime_settings_update_persists_and_wakes_the_scheduler(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "kcp.sqlite3")
+            store.migrate()
+            config = RuntimeConfig(
+                db_path=root / "kcp.sqlite3",
+                docs_dir=Path("kcp/assets/k8s-docs"),
+                refresh_seconds=3600,
+                retention_days=90,
+                admin_username="admin",
+                insecure_http=True,
+                session_secret="test" * 16,
+            )
+            service = CollectionService(config, store, DocumentRegistry(config.docs_dir), lambda _: _SnapshotCollector())
+
+            service.update_runtime_settings(False, snapshot_interval_minutes=30, retention_days=180)
+
+            self.assertEqual(
+                service.runtime_settings(),
+                {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+            )
+            self.assertTrue(service._schedule_changed.is_set())
+
     def test_collect_all_persists_a_snapshot_for_each_cluster(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

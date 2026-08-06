@@ -29,6 +29,23 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.store.verify_admin("admin", "correct horse battery staple"))
         self.assertTrue(self.store.verify_admin("admin", "a newer correct password"))
 
+    def test_runtime_settings_use_defaults_and_persist_valid_updates(self) -> None:
+        self.assertEqual(
+            self.store.get_runtime_settings(default_refresh_seconds=3600, default_retention_days=90),
+            {"schedule_enabled": True, "snapshot_interval_minutes": 60, "retention_days": 90},
+        )
+
+        self.store.update_runtime_settings(False, snapshot_interval_minutes=30, retention_days=180)
+
+        self.assertEqual(
+            self.store.get_runtime_settings(default_refresh_seconds=3600, default_retention_days=90),
+            {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+        )
+        with self.assertRaisesRegex(ValueError, "Snapshot interval"):
+            self.store.update_runtime_settings(True, snapshot_interval_minutes=14, retention_days=90)
+        with self.assertRaisesRegex(ValueError, "Report retention"):
+            self.store.update_runtime_settings(True, snapshot_interval_minutes=60, retention_days=0)
+
     def test_prune_snapshots_removes_only_expired_rows(self) -> None:
         now = datetime.now(UTC)
         expired = self.store.save_snapshot(

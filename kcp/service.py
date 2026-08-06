@@ -29,11 +29,19 @@ class CollectionService:
         self.collector_factory = collector_factory
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._schedule_changed = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_errors: dict[int, str] = {}
 
     def last_error_for(self, cluster_id: int) -> str | None:
         return self._last_errors.get(cluster_id)
+
+    def runtime_settings(self) -> dict[str, int | bool]:
+        return self.store.get_runtime_settings(self.config.refresh_seconds, self.config.retention_days)
+
+    def update_runtime_settings(self, schedule_enabled: bool, snapshot_interval_minutes: int, retention_days: int) -> None:
+        self.store.update_runtime_settings(schedule_enabled, snapshot_interval_minutes, retention_days)
+        self._schedule_changed.set()
 
     def collect_now(self, cluster_id: int) -> int | None:
         if not self._lock.acquire(blocking=False):
@@ -85,9 +93,19 @@ class CollectionService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._schedule_changed.set()
 
     def _run(self) -> None:
-        while not self._stop.wait(self.config.refresh_seconds):
+        while not self._stop.is_set():
+            settings = self.runtime_settings()
+            if not settings["schedule_enabled"]:
+                self._schedule_changed.wait()
+                self._schedule_changed.clear()
+                continue
+            changed = self._schedule_changed.wait(int(settings["snapshot_interval_minutes"]) * 60)
+            self._schedule_changed.clear()
+            if self._stop.is_set() or changed:
+                continue
             self.collect_all()
 
     def _collect_cluster(self, cluster_id: int) -> int:
@@ -107,7 +125,7 @@ class CollectionService:
                 payload,
                 cluster_id=cluster_id,
             )
-            self.store.prune_snapshots(datetime.now(UTC) - timedelta(days=self.config.retention_days))
+            self.store.prune_snapshots(datetime.now(UTC) - timedelta(days=int(self.runtime_settings()["retention_days"])))
             self._last_errors.pop(cluster_id, None)
             self._record_log(cluster_id, "snapshot", "success", f"Snapshot {snapshot_id} collected.")
             return snapshot_id
@@ -120,6 +138,6 @@ class CollectionService:
     def _record_log(self, cluster_id: int, action: str, status: str, message: str) -> None:
         try:
             self.store.add_cluster_log(cluster_id, action, status, message)
-            self.store.prune_cluster_logs(datetime.now(UTC) - timedelta(days=self.config.retention_days))
+            self.store.prune_cluster_logs(datetime.now(UTC) - timedelta(days=int(self.runtime_settings()["retention_days"])))
         except Exception as exc:
             LOGGER.warning("Cluster log update failed for cluster %s: %s", cluster_id, type(exc).__name__)

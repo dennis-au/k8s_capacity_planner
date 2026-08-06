@@ -120,6 +120,24 @@ def create_app(
                     return redirect(url_for("account"))
         return _render("Account", _ACCOUNT_TEMPLATE, username=config.admin_username)
 
+    @app.route("/settings", methods=["GET", "POST"])
+    def settings() -> Response | str:
+        runtime_settings = service.runtime_settings()
+        if request.method == "POST":
+            _validate_csrf()
+            try:
+                service.update_runtime_settings(
+                    request.form.get("schedule_enabled") == "1",
+                    int(request.form.get("snapshot_interval_minutes", "")),
+                    int(request.form.get("retention_days", "")),
+                )
+            except ValueError as exc:
+                flash(str(exc), "error")
+            else:
+                flash("Runtime settings updated.", "success")
+                return redirect(url_for("settings"))
+        return _render("Settings", _SETTINGS_TEMPLATE, settings=runtime_settings)
+
     @app.get("/")
     def overview() -> str:
         active_cluster = _active_cluster(store)
@@ -384,7 +402,7 @@ def create_app(
             "show_refresh": authenticated
             and active_cluster is not None
             and not active_cluster["legacy_connection"]
-            and title not in {"Documentation", "Clusters", "Add cluster", "Edit cluster", "Remove cluster", "Account"},
+            and title not in {"Documentation", "Clusters", "Add cluster", "Edit cluster", "Remove cluster", "Account", "Settings"},
             "format_cpu": _format_cpu,
             "format_bytes": _format_bytes,
             "format_percent": _format_percent,
@@ -631,7 +649,7 @@ _BASE_TEMPLATE = """<!doctype html>
 <title>{{ title }} | KCP</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}"></head><body>
 {% if authenticated %}
 <header class="topbar"><a class="brand" href="{{ url_for('overview') }}">KCP <span>Capacity Planner</span></a>
-<nav aria-label="Primary"><a href="{{ url_for('overview') }}">Overview</a><a href="{{ url_for('allocation') }}">Allocation</a><a href="{{ url_for('clusters') }}">Clusters</a><a href="{{ url_for('findings') }}">Findings</a><a href="{{ url_for('nodes') }}">Nodes</a><a href="{{ url_for('namespaces') }}">Namespaces</a><a href="{{ url_for('workloads') }}">Workloads</a><a href="{{ url_for('history') }}">History</a><a href="{{ url_for('documentation') }}">Docs</a><a href="{{ url_for('account') }}">Account</a></nav>
+<nav aria-label="Primary"><a href="{{ url_for('overview') }}">Overview</a><a href="{{ url_for('allocation') }}">Allocation</a><a href="{{ url_for('clusters') }}">Clusters</a><a href="{{ url_for('findings') }}">Findings</a><a href="{{ url_for('nodes') }}">Nodes</a><a href="{{ url_for('namespaces') }}">Namespaces</a><a href="{{ url_for('workloads') }}">Workloads</a><a href="{{ url_for('history') }}">History</a><a href="{{ url_for('documentation') }}">Docs</a><a href="{{ url_for('settings') }}">Settings</a><a href="{{ url_for('account') }}">Account</a></nav>
 {% if clusters %}<form class="cluster-switcher" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ current_path }}"><label for="active-cluster">Active cluster</label><select id="active-cluster" name="cluster_id">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if active_cluster and cluster.id == active_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select><button class="quiet" type="submit">Use</button></form>{% endif %}
 <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet" type="submit">Sign out</button></form></header>
 {% endif %}
@@ -643,6 +661,8 @@ _BASE_TEMPLATE = """<!doctype html>
 _LOGIN_TEMPLATE = """<section class="login-panel"><p class="eyebrow">Dark-site operation</p><h1>Capacity Planner</h1><p>Sign in to review the configured Kubernetes endpoint.</p><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Administrator<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section>"""
 
 _ACCOUNT_TEMPLATE = """<div class="account-layout"><section class="account-summary"><p class="eyebrow">Local administrator</p><h2>Administrator account</h2><dl><dt>Username</dt><dd>{{ username }}</dd><dt>Authentication</dt><dd>Local password</dd></dl></section><section class="account-form"><p class="eyebrow">Password</p><h2>Change password</h2><form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="new-password">New password<input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><label for="confirm-password">Confirm new password<input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><button type="submit">Update password</button></form></section></div>"""
+
+_SETTINGS_TEMPLATE = """<div class="settings-layout"><section class="settings-summary"><p class="eyebrow">Runtime policy</p><h2>Collection settings</h2><dl><dt>Automatic snapshots</dt><dd>{{ 'Enabled' if settings.schedule_enabled else 'Paused' }}</dd><dt>Snapshot interval</dt><dd>Every {{ settings.snapshot_interval_minutes }} minutes</dd><dt>Report retention</dt><dd>{{ settings.retention_days }} days</dd></dl></section><section class="settings-form"><p class="eyebrow">Scheduling</p><h2>Update settings</h2><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="checkbox-label" for="schedule-enabled"><input id="schedule-enabled" name="schedule_enabled" type="checkbox" value="1" {% if settings.schedule_enabled %}checked{% endif %}>Automatic snapshots</label><label for="snapshot-interval">Snapshot interval (minutes)<input id="snapshot-interval" name="snapshot_interval_minutes" type="number" min="15" max="1440" step="1" value="{{ settings.snapshot_interval_minutes }}" required></label><label for="retention-days">Report retention (days)<input id="retention-days" name="retention_days" type="number" min="1" max="3650" step="1" value="{{ settings.retention_days }}" required></label><button type="submit">Save settings</button></form></section></div>"""
 
 _OVERVIEW_TEMPLATE = """{% if not record %}<section class="empty"><div class="empty-copy">{% if connection %}<p class="eyebrow">First report</p><h2>No snapshots collected</h2><p>Confirm the active cluster connection, then collect the first read-only snapshot.</p><a class="button-link" href="{{ url_for('clusters') }}">Review clusters</a>{% else %}<p class="eyebrow">First cluster</p><h2>Add a cluster</h2><p>Mount a read-only kubeconfig in the container, then add its path and context before collecting a report.</p><a class="button-link" href="{{ url_for('new_cluster') }}">Add cluster</a>{% endif %}</div><dl class="empty-details"><div><dt>Active cluster</dt><dd>{{ connection.name if connection else 'Not configured' }}</dd></div><div><dt>API endpoint</dt><dd>{{ connection.endpoint if connection else 'Unavailable' }}</dd></div><div><dt>Collection mode</dt><dd>Read-only</dd></div></dl></section>{% else %}
 <section class="metrics"><div><span>Nodes</span><strong>{{ summary.nodes }}</strong></div><div><span>Namespaces</span><strong>{{ summary.namespaces }}</strong></div><div><span>Workloads</span><strong>{{ summary.workloads }}</strong></div><div class="critical"><span>Critical</span><strong>{{ summary.critical }}</strong></div><div class="warning"><span>Warnings</span><strong>{{ summary.warning }}</strong></div></section>

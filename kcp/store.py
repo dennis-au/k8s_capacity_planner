@@ -16,6 +16,9 @@ _USERNAME = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 _CLUSTER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 ._-]{1,63}$")
 _PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 _CLUSTER_FIELDS = "id, name, endpoint, kubeconfig_file, kube_context, api_ip, legacy_token_file, legacy_ca_file"
+_SETTINGS_SCHEDULE_ENABLED = "schedule_enabled"
+_SETTINGS_INTERVAL_MINUTES = "snapshot_interval_minutes"
+_SETTINGS_RETENTION_DAYS = "retention_days"
 _CLUSTERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS clusters (
     id INTEGER PRIMARY KEY,
@@ -155,6 +158,42 @@ class Store:
             )
             if result.rowcount != 1:
                 raise ValueError(f"administrator {username!r} does not exist")
+
+    def get_runtime_settings(self, default_refresh_seconds: int, default_retention_days: int) -> dict[str, int | bool]:
+        default_interval_minutes = max(15, default_refresh_seconds // 60)
+        self._validate_runtime_settings(default_interval_minutes, default_retention_days)
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT key, value FROM app_state WHERE key IN (?, ?, ?)",
+                (_SETTINGS_SCHEDULE_ENABLED, _SETTINGS_INTERVAL_MINUTES, _SETTINGS_RETENTION_DAYS),
+            ).fetchall()
+        values = {row["key"]: row["value"] for row in rows}
+        try:
+            interval_minutes = int(values.get(_SETTINGS_INTERVAL_MINUTES, default_interval_minutes))
+            retention_days = int(values.get(_SETTINGS_RETENTION_DAYS, default_retention_days))
+        except ValueError:
+            interval_minutes = default_interval_minutes
+            retention_days = default_retention_days
+        self._validate_runtime_settings(interval_minutes, retention_days)
+        return {
+            "schedule_enabled": values.get(_SETTINGS_SCHEDULE_ENABLED, "1") == "1",
+            "snapshot_interval_minutes": interval_minutes,
+            "retention_days": retention_days,
+        }
+
+    def update_runtime_settings(self, schedule_enabled: bool, snapshot_interval_minutes: int, retention_days: int) -> None:
+        self._validate_runtime_settings(snapshot_interval_minutes, retention_days)
+        values = (
+            (_SETTINGS_SCHEDULE_ENABLED, "1" if schedule_enabled else "0"),
+            (_SETTINGS_INTERVAL_MINUTES, str(snapshot_interval_minutes)),
+            (_SETTINGS_RETENTION_DAYS, str(retention_days)),
+        )
+        with self._connection() as connection:
+            connection.executemany(
+                "INSERT INTO app_state(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                values,
+            )
 
     def bootstrap_cluster(
         self, name: str, kubeconfig_file: str, kube_context: str, endpoint: str, api_ip: str | None = None
@@ -401,6 +440,13 @@ class Store:
                 "DELETE FROM snapshots WHERE collected_at < ?", (cutoff.isoformat(),)
             )
             return result.rowcount
+
+    @staticmethod
+    def _validate_runtime_settings(snapshot_interval_minutes: int, retention_days: int) -> None:
+        if not 15 <= snapshot_interval_minutes <= 1_440:
+            raise ValueError("Snapshot interval must be between 15 and 1440 minutes")
+        if not 1 <= retention_days <= 3_650:
+            raise ValueError("Report retention must be between 1 and 3650 days")
 
     def _update_password_hash(self, username: str, password_hash: str) -> None:
         with self._connection() as connection:
