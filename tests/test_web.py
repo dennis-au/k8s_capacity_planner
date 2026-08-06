@@ -15,6 +15,9 @@ from kcp.web import create_app
 
 
 class _Collector:
+    def test_connection(self) -> str:
+        return "v1.36.1"
+
     def collect(self) -> ClusterSnapshot:
         return ClusterSnapshot(
             cluster_version="v1.36.1",
@@ -419,6 +422,53 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(self.store.get_cluster(west["id"]))
         self.assertEqual(self.store.list_snapshots(west["id"]), [])
         self.assertIn("No clusters configured.", removed.text)
+
+    def test_cluster_configuration_tests_connection_collects_snapshot_and_shows_log(self) -> None:
+        kubeconfig = _write_kubeconfig(
+            Path(self.temp_dir.name),
+            "operations-readonly",
+            "https://operations.example:6443",
+            "operations.kubeconfig",
+        )
+        cluster = self.store.create_cluster(
+            "Operations",
+            str(kubeconfig),
+            "operations-readonly",
+            "https://operations.example:6443",
+        )
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+
+        edit = self.client.get(f"/clusters/{cluster['id']}")
+        self.assertIn("Test connection", edit.text)
+        self.assertIn("Take snapshot", edit.text)
+        self.assertIn("Connection log", edit.text)
+        self.assertIn("No cluster operations recorded.", edit.text)
+
+        tested = self.client.post(
+            f"/clusters/{cluster['id']}/test",
+            data={"csrf_token": _csrf(edit.text)},
+            follow_redirects=True,
+        )
+        self.assertIn("Connection verified: v1.36.1.", tested.text)
+        self.assertIn("Connected to Kubernetes v1.36.1.", tested.text)
+        self.assertEqual(self.store.list_cluster_logs(cluster["id"])[0]["action"], "connection-test")
+
+        snapped = self.client.post(
+            f"/clusters/{cluster['id']}/snapshot",
+            data={"csrf_token": _csrf(tested.text)},
+            follow_redirects=True,
+        )
+        self.assertIn("Snapshot 1 collected.", snapped.text)
+        self.assertIsNotNone(self.store.latest_snapshot(cluster["id"]))
+        logs = self.store.list_cluster_logs(cluster["id"])
+        self.assertEqual([log["action"] for log in logs], ["snapshot", "connection-test"])
+
+        invalid_csrf = self.client.post(f"/clusters/{cluster['id']}/test", data={"csrf_token": "invalid"})
+        self.assertEqual(invalid_csrf.status_code, 400)
 
     def test_default_collector_uses_the_saved_cluster_connection(self) -> None:
         kubeconfig = _write_kubeconfig(

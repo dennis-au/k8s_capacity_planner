@@ -276,6 +276,15 @@ label { display: grid; gap: 6px; margin: 16px 0; color: var(--muted); font-weigh
 .connection-form form { max-width: 680px; }
 .connection-form button { margin-top: 4px; }
 
+.cluster-operations { border-bottom: 1px solid var(--line); padding: 28px 0; }
+.cluster-operations .section-heading { margin-bottom: 16px; }
+.cluster-operations .section-heading h2 { font-size: 20px; }
+.operation-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.operation-actions form { margin: 0; }
+.operation-actions .quiet { min-height: 36px; }
+.connection-log { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+.connection-log .section-heading { margin-bottom: 12px; }
+
 .kubeconfig-source { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 22px 0 16px; padding: 0; border: 0; }
 .kubeconfig-source legend { margin-bottom: 8px; color: var(--muted); font-weight: 600; }
 .kubeconfig-source label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text); font-weight: 500; }
@@ -337,6 +346,9 @@ input[type="file"] { padding: 7px; }
   .cluster-table th:nth-child(6),
   .cluster-table td:nth-child(6) { min-width: 160px; }
   .search { align-items: stretch; flex-direction: column; }
+  .operation-actions { align-items: stretch; flex-direction: column; }
+  .operation-actions form,
+  .operation-actions button { width: 100%; }
   select { min-width: 0; max-width: none; }
   .cluster-switcher { width: 100%; }
   .cluster-switcher select { flex: 1; }

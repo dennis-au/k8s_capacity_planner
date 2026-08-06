@@ -83,6 +83,22 @@ class Store:
             )
             self._ensure_clusters_schema(connection)
             self._migrate_legacy_cluster_connection(connection)
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS cluster_logs (
+                    id INTEGER PRIMARY KEY,
+                    cluster_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    FOREIGN KEY(cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS cluster_logs_cluster_created_at_idx
+                    ON cluster_logs(cluster_id, created_at DESC);
+                """
+            )
             if "cluster_id" not in self._table_columns(connection, "snapshots"):
                 connection.execute("ALTER TABLE snapshots ADD COLUMN cluster_id INTEGER")
             first_cluster = connection.execute("SELECT id FROM clusters ORDER BY id LIMIT 1").fetchone()
@@ -246,8 +262,48 @@ class Store:
     def delete_cluster(self, cluster_id: int) -> bool:
         with self._connection() as connection:
             connection.execute("DELETE FROM snapshots WHERE cluster_id = ?", (cluster_id,))
+            connection.execute("DELETE FROM cluster_logs WHERE cluster_id = ?", (cluster_id,))
             result = connection.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
         return result.rowcount == 1
+
+    def add_cluster_log(self, cluster_id: int, action: str, status: str, message: str) -> None:
+        if action not in {"connection-test", "snapshot"}:
+            raise ValueError("invalid cluster log action")
+        if status not in {"success", "error"}:
+            raise ValueError("invalid cluster log status")
+        if not message or len(message) > 512:
+            raise ValueError("cluster log message must be 1-512 characters")
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO cluster_logs(cluster_id, created_at, action, status, message)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (cluster_id, _iso_now(), action, status, message),
+            )
+
+    def list_cluster_logs(self, cluster_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise ValueError("cluster log limit must be between 1 and 500")
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT created_at, action, status, message
+                FROM cluster_logs
+                WHERE cluster_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (cluster_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def prune_cluster_logs(self, cutoff: datetime) -> int:
+        if cutoff.tzinfo is None:
+            raise ValueError("cutoff must be timezone-aware")
+        with self._connection() as connection:
+            result = connection.execute("DELETE FROM cluster_logs WHERE created_at < ?", (cutoff.isoformat(),))
+            return result.rowcount
 
     def save_snapshot(
         self, collected_at: datetime, cluster_version: str, payload: dict[str, Any], cluster_id: int | None = None

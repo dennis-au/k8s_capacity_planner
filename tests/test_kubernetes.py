@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from kubernetes import client
 
@@ -122,6 +122,14 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(configuration.tls_server_name, "production.darksite.local")
         self.assertEqual(configuration.assert_hostname, "production.darksite.local")
         self.assertTrue(callable(getattr(KubernetesCollector, "collect", None)))
+
+    def test_connection_test_reads_only_the_kubernetes_version_endpoint(self) -> None:
+        collector = KubernetesCollector.__new__(KubernetesCollector)
+        collector.version = Mock()
+        collector.version.get_code.return_value = Mock(git_version="v1.36.1")
+
+        self.assertEqual(collector.test_connection(), "v1.36.1")
+        collector.version.get_code.assert_called_once_with(_request_timeout=10)
 
 
 def _write_kubeconfig(root: Path, context: str = "production", user: str = "token: read-only-token", filename: str = "kubeconfig", insecure: bool = False) -> Path:

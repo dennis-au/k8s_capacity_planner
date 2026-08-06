@@ -64,6 +64,58 @@ class ConfigAndServiceTests(unittest.TestCase):
             self.assertIsNotNone(snapshot_id)
             self.assertEqual(len(store.list_snapshots(cluster["id"])), 1)
             self.assertEqual(store.latest_snapshot(cluster["id"])["cluster_version"], "v1.36.0")
+            self.assertEqual(store.list_cluster_logs(cluster["id"])[0]["action"], "snapshot")
+            self.assertEqual(store.list_cluster_logs(cluster["id"])[0]["status"], "success")
+
+    def test_connection_test_records_a_redacted_successful_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "kcp.sqlite3")
+            store.migrate()
+            cluster = store.create_cluster("East", "/run/east.kubeconfig", "east", "https://east.example")
+            config = RuntimeConfig(
+                db_path=root / "kcp.sqlite3",
+                docs_dir=Path("kcp/assets/k8s-docs"),
+                refresh_seconds=3600,
+                retention_days=90,
+                admin_username="admin",
+                insecure_http=True,
+                session_secret="test" * 16,
+            )
+            service = CollectionService(config, store, DocumentRegistry(config.docs_dir), lambda _: _SnapshotCollector())
+
+            self.assertEqual(service.test_connection(cluster["id"]), "v1.36.0")
+
+            log = store.list_cluster_logs(cluster["id"])[0]
+            self.assertEqual(log["action"], "connection-test")
+            self.assertEqual(log["status"], "success")
+            self.assertEqual(log["message"], "Connected to Kubernetes v1.36.0.")
+
+    def test_connection_test_records_a_redacted_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "kcp.sqlite3")
+            store.migrate()
+            cluster = store.create_cluster("East", "/run/east.kubeconfig", "east", "https://east.example")
+            config = RuntimeConfig(
+                db_path=root / "kcp.sqlite3",
+                docs_dir=Path("kcp/assets/k8s-docs"),
+                refresh_seconds=3600,
+                retention_days=90,
+                admin_username="admin",
+                insecure_http=True,
+                session_secret="test" * 16,
+            )
+            service = CollectionService(config, store, DocumentRegistry(config.docs_dir), lambda _: _FailingCollector())
+
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                service.test_connection(cluster["id"])
+
+            self.assertEqual(service.last_error_for(cluster["id"]), "Connection test failed: RuntimeError")
+            log = store.list_cluster_logs(cluster["id"])[0]
+            self.assertEqual(log["action"], "connection-test")
+            self.assertEqual(log["status"], "error")
+            self.assertEqual(log["message"], "Connection test failed.")
 
     def test_collect_all_persists_a_snapshot_for_each_cluster(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -119,6 +171,14 @@ class ConfigAndServiceTests(unittest.TestCase):
 class _SnapshotCollector:
     def collect(self) -> ClusterSnapshot:
         return ClusterSnapshot(cluster_version="v1.36.0", metrics_available=True, nodes=[], namespaces=[], workloads=[])
+
+    def test_connection(self) -> str:
+        return "v1.36.0"
+
+
+class _FailingCollector:
+    def test_connection(self) -> str:
+        raise RuntimeError("unavailable")
 
 
 def _write_kubeconfig(root: Path) -> Path:

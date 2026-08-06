@@ -115,6 +115,31 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.latest_snapshot(west["id"])["payload"]["cluster"], "west")
         self.assertFalse(self.store.delete_cluster(east["id"]))
 
+    def test_cluster_logs_are_retained_per_cluster_and_removed_with_the_cluster(self) -> None:
+        east = self.store.create_cluster(
+            "Production East",
+            "/run/kcp/east.kubeconfig",
+            "east-readonly",
+            "https://east.example:6443",
+        )
+        west = self.store.create_cluster(
+            "Production West",
+            "/run/kcp/west.kubeconfig",
+            "west-readonly",
+            "https://west.example:6443",
+        )
+        self.store.add_cluster_log(east["id"], "connection-test", "success", "Connected to Kubernetes v1.36.0.")
+        self.store.add_cluster_log(west["id"], "snapshot", "error", "Snapshot collection failed.")
+
+        east_logs = self.store.list_cluster_logs(east["id"])
+        self.assertEqual(len(east_logs), 1)
+        self.assertEqual(east_logs[0]["action"], "connection-test")
+        self.assertEqual(self.store.list_cluster_logs(west["id"])[0]["action"], "snapshot")
+
+        self.assertTrue(self.store.delete_cluster(east["id"]))
+        self.assertEqual(self.store.list_cluster_logs(east["id"]), [])
+        self.assertEqual(len(self.store.list_cluster_logs(west["id"])), 1)
+
     def test_bootstrap_cluster_does_not_restore_a_removed_final_cluster(self) -> None:
         cluster = self.store.bootstrap_cluster(
             "Configured cluster",

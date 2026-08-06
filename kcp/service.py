@@ -43,6 +43,26 @@ class CollectionService:
         finally:
             self._lock.release()
 
+    def test_connection(self, cluster_id: int) -> str | None:
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            cluster = self.store.get_cluster(cluster_id)
+            if cluster is None:
+                raise ValueError("Cluster is not configured")
+            try:
+                version = self.collector_factory(cluster).test_connection()
+            except Exception as exc:
+                self._last_errors[cluster_id] = f"Connection test failed: {type(exc).__name__}"
+                self._record_log(cluster_id, "connection-test", "error", "Connection test failed.")
+                LOGGER.warning("Kubernetes connection test failed for cluster %s: %s", cluster_id, type(exc).__name__)
+                raise
+            self._last_errors.pop(cluster_id, None)
+            self._record_log(cluster_id, "connection-test", "success", f"Connected to Kubernetes {version}.")
+            return version
+        finally:
+            self._lock.release()
+
     def collect_all(self) -> list[int] | None:
         if not self._lock.acquire(blocking=False):
             return None
@@ -89,8 +109,17 @@ class CollectionService:
             )
             self.store.prune_snapshots(datetime.now(UTC) - timedelta(days=self.config.retention_days))
             self._last_errors.pop(cluster_id, None)
+            self._record_log(cluster_id, "snapshot", "success", f"Snapshot {snapshot_id} collected.")
             return snapshot_id
         except Exception as exc:
             self._last_errors[cluster_id] = f"Collection failed: {type(exc).__name__}"
+            self._record_log(cluster_id, "snapshot", "error", "Snapshot collection failed.")
             LOGGER.warning("Kubernetes collection failed for cluster %s: %s", cluster_id, type(exc).__name__)
             raise
+
+    def _record_log(self, cluster_id: int, action: str, status: str, message: str) -> None:
+        try:
+            self.store.add_cluster_log(cluster_id, action, status, message)
+            self.store.prune_cluster_logs(datetime.now(UTC) - timedelta(days=self.config.retention_days))
+        except Exception as exc:
+            LOGGER.warning("Cluster log update failed for cluster %s: %s", cluster_id, type(exc).__name__)

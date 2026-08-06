@@ -129,6 +129,10 @@ class KubernetesCollector:
             warnings=warnings,
         )
 
+    def test_connection(self) -> str:
+        version = self.version.get_code(_request_timeout=10)
+        return str(version.git_version or "unknown Kubernetes version")
+
 
 def inspect_kubeconfig(
     kubeconfig_file: str | Path, context: str | None = None, api_ip: str | None = None
