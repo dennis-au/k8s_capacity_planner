@@ -25,11 +25,11 @@
 
 **Exit criteria:** A persisted `lab110` snapshot is available in Overview and History, with all partial-data limitations visible.
 
-## Milestone 4: Capacity Recommendations [ ]
+## Milestone 4: Capacity Recommendations [x]
 
-- [ ] Review node allocatable headroom, requested capacity, limits, QoS, quota/LimitRange coverage, pressure signals, HPA coverage, and workload usage where Metrics API data exists.
-- [ ] Review the Allocation and Findings pages for actionable CPU and memory allocation recommendations.
-- [ ] Verify every finding cites the matching embedded Kubernetes v1.36 official guidance section.
+- [x] Review node allocatable headroom, requested capacity, limits, QoS, quota/LimitRange coverage, pressure signals, HPA coverage, and workload usage where Metrics API data exists.
+- [x] Review the Allocation and Findings pages for actionable CPU and memory allocation recommendations.
+- [x] Verify every finding cites the matching embedded Kubernetes v1.36 official guidance section.
 
 **Exit criteria:** KCP provides evidence-based, source-cited recommendations without modifying `lab110`.
 

@@ -25,6 +25,14 @@ Last updated: August 6, 2026
 - The optional Metrics API is unavailable and is shown as **Unavailable** in Overview with a snapshot warning; usage values are not fabricated.
 - Overview, Nodes, Namespaces, Workloads, and History render the `lab110` snapshot successfully.
 
+## Milestone 4: Complete
+
+- All 13 persisted findings include resource evidence, a recommendation, and an embedded Kubernetes source reference.
+- Allocation displays Node Allocatable/request headroom and 3 workload recommendations, each with its Kubernetes source citation.
+- With zero Metrics API snapshots, allocation recommendations correctly request usable metrics before proposing numeric request changes.
+- Findings and Allocation link to local documentation; the resource-metrics document displays Kubernetes baseline `v1.36` and its source revision.
+- `lab110` reports Kubernetes `v1.36.3+k3s1`, which matches the embedded `v1.36` minor baseline. The automated version-compatibility test covers the warning behavior for other minors.
+
 ## Current Work
 
-Milestone 4: validate evidence-based capacity recommendations and embedded Kubernetes documentation citations.
+Milestone 5: validate exports, active-cluster isolation, and redacted cluster-operation history.
