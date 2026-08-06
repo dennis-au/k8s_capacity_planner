@@ -17,11 +17,11 @@
 
 **Exit criteria:** The Cluster page shows `lab110`, its Kubernetes version, and a successful test result.
 
-## Milestone 3: Snapshot and Data Quality [ ]
+## Milestone 3: Snapshot and Data Quality [x]
 
-- [ ] Run **Take snapshot** for `lab110`.
-- [ ] Verify node, namespace, pod/workload, requests, limits, ownership, quota, LimitRange, HPA, warning-event, and Metrics API collection results.
-- [ ] Verify that a missing optional API produces a visible warning rather than failed or fabricated usage data.
+- [x] Run **Take snapshot** for `lab110`.
+- [x] Verify node, namespace, pod/workload, requests, limits, ownership, quota, LimitRange, HPA, warning-event, and Metrics API collection results.
+- [x] Verify that a missing optional API produces a visible warning rather than failed or fabricated usage data.
 
 **Exit criteria:** A persisted `lab110` snapshot is available in Overview and History, with all partial-data limitations visible.
 

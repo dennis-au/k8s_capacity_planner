@@ -17,6 +17,14 @@ Last updated: August 6, 2026
 - The real KCP runtime verified the connection against `lab110` and recorded `Connected to Kubernetes v1.36.3+k3s1.`
 - The connection log contains only the action, status, timestamp, and redacted result message; it does not expose kubeconfig or token contents.
 
+## Milestone 3: Complete
+
+- Snapshot `2` was collected from the real `lab110` API and records Kubernetes `v1.36.3+k3s1`.
+- The snapshot contains 1 node, 5 namespaces, 3 workload owners, requests, limits, QoS, node conditions, quota/LimitRange coverage, HPA coverage, and warning events.
+- This test cluster currently has no ResourceQuota, LimitRange, or HPA resources; KCP records those as absent state rather than missing collection data.
+- The optional Metrics API is unavailable and is shown as **Unavailable** in Overview with a snapshot warning; usage values are not fabricated.
+- Overview, Nodes, Namespaces, Workloads, and History render the `lab110` snapshot successfully.
+
 ## Current Work
 
-Milestone 3: collect a real snapshot and validate data coverage and partial-data behavior.
+Milestone 4: validate evidence-based capacity recommendations and embedded Kubernetes documentation citations.
