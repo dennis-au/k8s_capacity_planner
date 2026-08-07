@@ -11,7 +11,15 @@ from kubernetes import client, config as kube_config
 from kubernetes.client import ApiClient
 from yaml import safe_load
 
-from kcp.models import ClusterSnapshot, NamespaceSummary, NodeSummary, QuotaUsage, ResourceValues, WorkloadSummary
+from kcp.models import (
+    ClusterSnapshot,
+    LimitRangeSummary,
+    NamespaceSummary,
+    NodeSummary,
+    QuotaUsage,
+    ResourceValues,
+    WorkloadSummary,
+)
 
 
 @dataclass(frozen=True)
@@ -100,9 +108,12 @@ class KubernetesCollector:
         node_summaries = [
             NodeSummary(
                 name=node.metadata.name,
+                capacity=ResourceValues.from_quantities(node.status.capacity),
                 allocatable=ResourceValues.from_quantities(node.status.allocatable),
                 requested=node_requested.get(node.metadata.name, ResourceValues()),
                 limits=_node_limits(active_pods, node.metadata.name),
+                ready=_node_ready(node),
+                schedulable=not bool(node.spec.unschedulable),
                 usage=node_usage.get(node.metadata.name, ResourceValues()),
                 conditions=[
                     condition.type
@@ -344,6 +355,13 @@ def _is_active_pod(pod: client.V1Pod) -> bool:
     return (pod.status.phase or "") not in {"Succeeded", "Failed"}
 
 
+def _node_ready(node: client.V1Node) -> bool:
+    return any(
+        condition.type == "Ready" and str(condition.status).lower() == "true"
+        for condition in node.status.conditions or []
+    )
+
+
 def _workload_owner(
     pod: client.V1Pod, replica_set_owners: dict[tuple[str, str], tuple[str, str]]
 ) -> tuple[str, str]:
@@ -416,15 +434,31 @@ def _namespace_summaries(
         used = (quota.status.used if quota.status else None) or {}
         for resource, hard_value in hard.items():
             if resource in used:
-                quota_map[quota.metadata.namespace or "default"][resource] = QuotaUsage(
+                candidate = QuotaUsage(
                     used=_quota_value(resource, used[resource]), hard=_quota_value(resource, hard_value)
                 )
-    limit_range_namespaces = {limit_range.metadata.namespace or "default" for limit_range in limit_ranges}
+                namespace = quota.metadata.namespace or "default"
+                existing = quota_map[namespace].get(resource)
+                if existing is None or candidate.hard - candidate.used < existing.hard - existing.used:
+                    quota_map[namespace][resource] = candidate
+    limit_range_map: dict[str, list[LimitRangeSummary]] = defaultdict(list)
+    for limit_range in limit_ranges:
+        namespace = limit_range.metadata.namespace or "default"
+        for policy in (limit_range.spec.limits if limit_range.spec else []) or []:
+            limit_range_map[namespace].append(
+                LimitRangeSummary(
+                    type=policy.type or "",
+                    minimum=ResourceValues.from_quantities(policy.min),
+                    maximum=ResourceValues.from_quantities(policy.max),
+                    default_request=ResourceValues.from_quantities(policy.default_request),
+                )
+            )
     return [
         NamespaceSummary(
             name=namespace.metadata.name,
-            has_limit_range=namespace.metadata.name in limit_range_namespaces,
+            has_limit_range=namespace.metadata.name in limit_range_map,
             quotas=quota_map.get(namespace.metadata.name, {}),
+            limit_ranges=limit_range_map.get(namespace.metadata.name, []),
         )
         for namespace in namespaces
     ]

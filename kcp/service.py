@@ -39,8 +39,16 @@ class CollectionService:
     def runtime_settings(self) -> dict[str, int | bool]:
         return self.store.get_runtime_settings(self.config.refresh_seconds, self.config.retention_days)
 
-    def update_runtime_settings(self, schedule_enabled: bool, snapshot_interval_minutes: int, retention_days: int) -> None:
-        self.store.update_runtime_settings(schedule_enabled, snapshot_interval_minutes, retention_days)
+    def update_runtime_settings(
+        self,
+        schedule_enabled: bool,
+        snapshot_interval_minutes: int,
+        retention_days: int,
+        planning_reserve_percent: int = 20,
+    ) -> None:
+        self.store.update_runtime_settings(
+            schedule_enabled, snapshot_interval_minutes, retention_days, planning_reserve_percent
+        )
         self._schedule_changed.set()
 
     def collect_now(self, cluster_id: int) -> int | None:

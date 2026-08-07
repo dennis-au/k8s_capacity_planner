@@ -4,7 +4,7 @@ import io
 import re
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +25,7 @@ class _Collector:
             nodes=[
                 NodeSummary(
                     name="worker-a",
+                    capacity=ResourceValues(cpu_millicores=2500, memory_bytes=3 * 1024**3),
                     allocatable=ResourceValues(cpu_millicores=2000, memory_bytes=2 * 1024**3),
                     requested=ResourceValues(cpu_millicores=500, memory_bytes=512 * 1024**2),
                     limits=ResourceValues(cpu_millicores=1000, memory_bytes=1024 * 1024**2),
@@ -87,7 +88,8 @@ class DashboardTests(unittest.TestCase):
         csrf = _csrf(response.text)
         refreshed = self.client.post("/collect", data={"csrf_token": csrf}, follow_redirects=True)
         self.assertIn("Snapshot 1 collected", refreshed.text)
-        self.assertIn("payments/Deployment/api", refreshed.text)
+        self.assertIn("Capacity decision", refreshed.text)
+        self.assertIn("Planning-safe CPU", refreshed.text)
 
         nodes = self.client.get("/nodes")
         self.assertIn("worker-a", nodes.text)
@@ -101,6 +103,91 @@ class DashboardTests(unittest.TestCase):
         export = self.client.get("/exports/latest.json")
         self.assertEqual(export.status_code, 200)
         self.assertIn('"cluster_version":"v1.36.1"', export.text)
+
+    def test_local_documentation_uses_readable_article_layout(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+
+        document = self.client.get("/docs/limit-range")
+
+        self.assertEqual(document.status_code, 200)
+        self.assertIn("Offline Kubernetes reference", document.text)
+        self.assertIn('class="doc-reading-layout"', document.text)
+        self.assertIn("On this page", document.text)
+        self.assertIn('class="doc-article"', document.text)
+        self.assertNotIn('class="doc-content"', document.text)
+
+    def test_local_documentation_renders_mermaid_without_exposing_source(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+
+        document = self.client.get("/docs/horizontal-pod-autoscale")
+
+        self.assertEqual(document.status_code, 200)
+        self.assertIn('class="doc-diagram"', document.text)
+        self.assertIn("HorizontalPodAutoscaler controls Scale.", document.text)
+        self.assertNotIn("graph BT hpa", document.text)
+
+    def test_overview_explains_management_capacity_and_cluster_status(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+
+        overview = self.client.get("/")
+        collected = self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+        self.assertIn("Capacity decision", collected.text)
+        self.assertIn("Ready", collected.text)
+        self.assertIn("Planning-safe CPU", collected.text)
+        self.assertIn('class="overview-dashboard"', collected.text)
+        self.assertIn("Node Allocatable", collected.text)
+        self.assertIn("Total node capacity", collected.text)
+        self.assertIn("Not allocatable to Pods", collected.text)
+        self.assertIn('class="capacity-chart-panel"', collected.text)
+        self.assertIn("Capacity composition", collected.text)
+        self.assertIn("Scheduled requests", collected.text)
+        self.assertIn("Held or unavailable", collected.text)
+        self.assertIn("Safe for deployment", collected.text)
+        self.assertIn('aria-label="CPU capacity composition"', collected.text)
+        self.assertIn('aria-label="Memory capacity composition"', collected.text)
+        self.assertIn("2,500m", collected.text)
+        self.assertIn("3,221,225,472 B", collected.text)
+        self.assertIn("2,000m", collected.text)
+        self.assertIn("2,147,483,648 B", collected.text)
+        self.assertIn("Usage available", collected.text)
+        self.assertIn("Observed CPU", collected.text)
+        self.assertIn("KCP planning reserve", collected.text)
+        self.assertIn("Reserve Compute Resources for System Daemons", collected.text)
+
+        clusters = self.client.get("/clusters")
+        self.assertIn("Management capacity", clusters.text)
+        self.assertIn("Ready", clusters.text)
+
+    def test_overview_does_not_load_report_history_for_capacity_status(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        overview = self.client.get("/")
+        self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+
+        with patch.object(self.store, "list_snapshots", wraps=self.store.list_snapshots) as snapshots:
+            response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        snapshots.assert_not_called()
 
     def test_first_login_has_no_cluster_until_a_kubeconfig_is_added(self) -> None:
         login = self.client.get("/login")
@@ -208,6 +295,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Collection settings", settings.text)
         self.assertIn('value="60"', settings.text)
         self.assertIn('value="90"', settings.text)
+        self.assertIn('value="20"', settings.text)
 
         updated = self.client.post(
             "/settings",
@@ -215,6 +303,7 @@ class DashboardTests(unittest.TestCase):
                 "csrf_token": _csrf(settings.text),
                 "snapshot_interval_minutes": "30",
                 "retention_days": "180",
+                "planning_reserve_percent": "25",
             },
             follow_redirects=True,
         )
@@ -222,9 +311,15 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Paused", updated.text)
         self.assertIn('value="30"', updated.text)
         self.assertIn('value="180"', updated.text)
+        self.assertIn('value="25"', updated.text)
         self.assertEqual(
             self.app.extensions["kcp_service"].runtime_settings(),
-            {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+            {
+                "schedule_enabled": False,
+                "snapshot_interval_minutes": 30,
+                "retention_days": 180,
+                "planning_reserve_percent": 25,
+            },
         )
 
         invalid = self.client.post(
@@ -234,6 +329,7 @@ class DashboardTests(unittest.TestCase):
                 "schedule_enabled": "1",
                 "snapshot_interval_minutes": "1",
                 "retention_days": "180",
+                "planning_reserve_percent": "25",
             },
             follow_redirects=True,
         )
@@ -242,7 +338,12 @@ class DashboardTests(unittest.TestCase):
 
         invalid_csrf = self.client.post(
             "/settings",
-            data={"csrf_token": "invalid", "snapshot_interval_minutes": "30", "retention_days": "180"},
+            data={
+                "csrf_token": "invalid",
+                "snapshot_interval_minutes": "30",
+                "retention_days": "180",
+                "planning_reserve_percent": "25",
+            },
         )
         self.assertEqual(invalid_csrf.status_code, 400)
 
@@ -494,7 +595,7 @@ class DashboardTests(unittest.TestCase):
 
         edit = self.client.get(f"/clusters/{cluster['id']}")
         self.assertIn("Test connection", edit.text)
-        self.assertIn("Take snapshot", edit.text)
+        self.assertNotIn("Take snapshot", edit.text)
         self.assertIn("Connection log", edit.text)
         self.assertIn("No cluster operations recorded.", edit.text)
 
@@ -507,18 +608,100 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Connected to Kubernetes v1.36.1.", tested.text)
         self.assertEqual(self.store.list_cluster_logs(cluster["id"])[0]["action"], "connection-test")
 
+        clusters = self.client.get("/clusters")
+        self.assertIn(f'action="/clusters/{cluster["id"]}/snapshot"', clusters.text)
+        self.assertIn("Take snapshot", clusters.text)
         snapped = self.client.post(
             f"/clusters/{cluster['id']}/snapshot",
-            data={"csrf_token": _csrf(tested.text)},
+            data={"csrf_token": _csrf(clusters.text)},
             follow_redirects=True,
         )
         self.assertIn("Snapshot 1 collected.", snapped.text)
+        self.assertIn("Configured clusters", snapped.text)
         self.assertIsNotNone(self.store.latest_snapshot(cluster["id"]))
         logs = self.store.list_cluster_logs(cluster["id"])
         self.assertEqual([log["action"] for log in logs], ["snapshot", "connection-test"])
 
         invalid_csrf = self.client.post(f"/clusters/{cluster['id']}/test", data={"csrf_token": "invalid"})
         self.assertEqual(invalid_csrf.status_code, 400)
+        invalid_snapshot_csrf = self.client.post(
+            f"/clusters/{cluster['id']}/snapshot", data={"csrf_token": "invalid"}
+        )
+        self.assertEqual(invalid_snapshot_csrf.status_code, 400)
+        missing = self.client.post(
+            "/clusters/9999/snapshot", data={"csrf_token": _csrf(snapped.text)}
+        )
+        self.assertEqual(missing.status_code, 404)
+
+    def test_cluster_snapshot_action_reports_failure_and_overlap_on_clusters_page(self) -> None:
+        kubeconfig = _write_kubeconfig(
+            Path(self.temp_dir.name),
+            "operations-readonly",
+            "https://operations.example:6443",
+            "operations.kubeconfig",
+        )
+        cluster = self.store.create_cluster(
+            "Operations",
+            str(kubeconfig),
+            "operations-readonly",
+            "https://operations.example:6443",
+        )
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        clusters = self.client.get("/clusters")
+        service = self.app.extensions["kcp_service"]
+
+        with patch.object(service, "collect_now", side_effect=RuntimeError):
+            failed = self.client.post(
+                f"/clusters/{cluster['id']}/snapshot",
+                data={"csrf_token": _csrf(clusters.text)},
+                follow_redirects=True,
+            )
+        self.assertIn("Snapshot collection failed.", failed.text)
+        self.assertIn("Configured clusters", failed.text)
+
+        with patch.object(service, "collect_now", return_value=None):
+            overlapping = self.client.post(
+                f"/clusters/{cluster['id']}/snapshot",
+                data={"csrf_token": _csrf(failed.text)},
+                follow_redirects=True,
+            )
+        self.assertIn("Another cluster operation is already running.", overlapping.text)
+        self.assertIn("Configured clusters", overlapping.text)
+
+    def test_legacy_cluster_does_not_offer_or_run_snapshot_action(self) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.store._connection() as connection:
+            result = connection.execute(
+                """
+                INSERT INTO clusters(
+                    name, endpoint, kubeconfig_file, kube_context, api_ip,
+                    legacy_token_file, legacy_ca_file, created_at, updated_at
+                ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
+                """,
+                ("Legacy", "https://legacy.example:6443", "/run/legacy.token", "/run/legacy.ca", now, now),
+            )
+            cluster_id = int(result.lastrowid)
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+
+        clusters = self.client.get("/clusters")
+        self.assertNotIn(f'action="/clusters/{cluster_id}/snapshot"', clusters.text)
+        blocked = self.client.post(
+            f"/clusters/{cluster_id}/snapshot",
+            data={"csrf_token": _csrf(clusters.text)},
+            follow_redirects=True,
+        )
+
+        self.assertIn("Update this legacy cluster with a kubeconfig", blocked.text)
+        self.assertIn("Configured clusters", blocked.text)
+        self.assertIsNone(self.store.latest_snapshot(cluster_id))
 
     def test_default_collector_uses_the_saved_cluster_connection(self) -> None:
         kubeconfig = _write_kubeconfig(
@@ -623,6 +806,71 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Request-based scheduling capacity", allocation.text)
         self.assertIn("payments/Deployment/api", allocation.text)
         self.assertIn("Resource Management for Pods and Containers", allocation.text)
+
+    def test_allocation_evaluates_a_new_deployment_fit_without_persisting_it(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        overview = self.client.get("/")
+        self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+
+        allocation = self.client.get("/allocation")
+        fit = self.client.post(
+            "/allocation",
+            data={
+                "csrf_token": _csrf(allocation.text),
+                "replicas": "2",
+                "cpu_request": "300m",
+                "memory_request": "256Mi",
+                "namespace": "payments",
+            },
+        )
+
+        self.assertEqual(fit.status_code, 200)
+        self.assertIn("New deployment fit", fit.text)
+        self.assertIn("Fits", fit.text)
+        self.assertIn("Maximum safe replicas", fit.text)
+        self.assertIn("Resource-only estimate", fit.text)
+        self.assertEqual(len(self.store.list_snapshots()), 1)
+
+        invalid = self.client.post(
+            "/allocation",
+            data={
+                "csrf_token": _csrf(fit.text),
+                "replicas": "0",
+                "cpu_request": "300m",
+                "memory_request": "256Mi",
+                "namespace": "",
+            },
+        )
+        self.assertIn("replicas must be at least 1", invalid.text)
+
+    def test_stale_reports_show_data_quality_and_export_capacity_provenance(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        cluster = self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        payload = _report_payload("Stale report")
+        payload["snapshot"]["warnings"] = ["Metrics API unavailable: ApiException"]
+        self.store.save_snapshot(datetime.now(UTC) - timedelta(hours=3), "v1.36.0", payload, cluster_id=cluster["id"])
+
+        overview = self.client.get("/")
+        self.assertIn("Report stale", overview.text)
+        self.assertIn("Collection limitations", overview.text)
+        self.assertIn("Metrics API unavailable", overview.text)
+
+        export_json = self.client.get("/exports/latest.json")
+        export_markdown = self.client.get("/exports/latest.md")
+        self.assertIn('"management_capacity"', export_json.text)
+        self.assertIn("Planning-safe capacity", export_markdown.text)
+        self.assertIn("/docs/node-allocatable", export_markdown.text)
 
 
 def _csrf(text: str) -> str:

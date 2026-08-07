@@ -32,19 +32,35 @@ class StoreTests(unittest.TestCase):
     def test_runtime_settings_use_defaults_and_persist_valid_updates(self) -> None:
         self.assertEqual(
             self.store.get_runtime_settings(default_refresh_seconds=3600, default_retention_days=90),
-            {"schedule_enabled": True, "snapshot_interval_minutes": 60, "retention_days": 90},
+            {
+                "schedule_enabled": True,
+                "snapshot_interval_minutes": 60,
+                "retention_days": 90,
+                "planning_reserve_percent": 20,
+            },
         )
 
-        self.store.update_runtime_settings(False, snapshot_interval_minutes=30, retention_days=180)
+        self.store.update_runtime_settings(
+            False, snapshot_interval_minutes=30, retention_days=180, planning_reserve_percent=25
+        )
 
         self.assertEqual(
             self.store.get_runtime_settings(default_refresh_seconds=3600, default_retention_days=90),
-            {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+            {
+                "schedule_enabled": False,
+                "snapshot_interval_minutes": 30,
+                "retention_days": 180,
+                "planning_reserve_percent": 25,
+            },
         )
         with self.assertRaisesRegex(ValueError, "Snapshot interval"):
             self.store.update_runtime_settings(True, snapshot_interval_minutes=14, retention_days=90)
         with self.assertRaisesRegex(ValueError, "Report retention"):
             self.store.update_runtime_settings(True, snapshot_interval_minutes=60, retention_days=0)
+        with self.assertRaisesRegex(ValueError, "Planning reserve"):
+            self.store.update_runtime_settings(
+                True, snapshot_interval_minutes=60, retention_days=90, planning_reserve_percent=51
+            )
 
     def test_prune_snapshots_removes_only_expired_rows(self) -> None:
         now = datetime.now(UTC)

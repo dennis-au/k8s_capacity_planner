@@ -137,7 +137,12 @@ class ConfigAndServiceTests(unittest.TestCase):
 
             self.assertEqual(
                 service.runtime_settings(),
-                {"schedule_enabled": False, "snapshot_interval_minutes": 30, "retention_days": 180},
+            {
+                "schedule_enabled": False,
+                "snapshot_interval_minutes": 30,
+                "retention_days": 180,
+                "planning_reserve_percent": 20,
+            },
             )
             self.assertTrue(service._schedule_changed.is_set())
 

@@ -68,11 +68,22 @@ class QuotaUsage:
 
 
 @dataclass(frozen=True)
+class LimitRangeSummary:
+    type: str
+    minimum: ResourceValues = field(default_factory=ResourceValues)
+    maximum: ResourceValues = field(default_factory=ResourceValues)
+    default_request: ResourceValues = field(default_factory=ResourceValues)
+
+
+@dataclass(frozen=True)
 class NodeSummary:
     name: str
     allocatable: ResourceValues
     requested: ResourceValues
     limits: ResourceValues
+    capacity: ResourceValues | None = None
+    ready: bool = True
+    schedulable: bool = True
     usage: ResourceValues = field(default_factory=ResourceValues)
     conditions: list[str] = field(default_factory=list)
 
@@ -82,6 +93,7 @@ class NamespaceSummary:
     name: str
     has_limit_range: bool
     quotas: dict[str, QuotaUsage] = field(default_factory=dict)
+    limit_ranges: list[LimitRangeSummary] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

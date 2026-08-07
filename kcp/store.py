@@ -19,6 +19,7 @@ _CLUSTER_FIELDS = "id, name, endpoint, kubeconfig_file, kube_context, api_ip, le
 _SETTINGS_SCHEDULE_ENABLED = "schedule_enabled"
 _SETTINGS_INTERVAL_MINUTES = "snapshot_interval_minutes"
 _SETTINGS_RETENTION_DAYS = "retention_days"
+_SETTINGS_PLANNING_RESERVE_PERCENT = "planning_reserve_percent"
 _CLUSTERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS clusters (
     id INTEGER PRIMARY KEY,
@@ -161,32 +162,52 @@ class Store:
 
     def get_runtime_settings(self, default_refresh_seconds: int, default_retention_days: int) -> dict[str, int | bool]:
         default_interval_minutes = max(15, default_refresh_seconds // 60)
-        self._validate_runtime_settings(default_interval_minutes, default_retention_days)
+        default_planning_reserve_percent = 20
+        self._validate_runtime_settings(
+            default_interval_minutes, default_retention_days, default_planning_reserve_percent
+        )
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT key, value FROM app_state WHERE key IN (?, ?, ?)",
-                (_SETTINGS_SCHEDULE_ENABLED, _SETTINGS_INTERVAL_MINUTES, _SETTINGS_RETENTION_DAYS),
+                "SELECT key, value FROM app_state WHERE key IN (?, ?, ?, ?)",
+                (
+                    _SETTINGS_SCHEDULE_ENABLED,
+                    _SETTINGS_INTERVAL_MINUTES,
+                    _SETTINGS_RETENTION_DAYS,
+                    _SETTINGS_PLANNING_RESERVE_PERCENT,
+                ),
             ).fetchall()
         values = {row["key"]: row["value"] for row in rows}
         try:
             interval_minutes = int(values.get(_SETTINGS_INTERVAL_MINUTES, default_interval_minutes))
             retention_days = int(values.get(_SETTINGS_RETENTION_DAYS, default_retention_days))
+            planning_reserve_percent = int(
+                values.get(_SETTINGS_PLANNING_RESERVE_PERCENT, default_planning_reserve_percent)
+            )
         except ValueError:
             interval_minutes = default_interval_minutes
             retention_days = default_retention_days
-        self._validate_runtime_settings(interval_minutes, retention_days)
+            planning_reserve_percent = default_planning_reserve_percent
+        self._validate_runtime_settings(interval_minutes, retention_days, planning_reserve_percent)
         return {
             "schedule_enabled": values.get(_SETTINGS_SCHEDULE_ENABLED, "1") == "1",
             "snapshot_interval_minutes": interval_minutes,
             "retention_days": retention_days,
+            "planning_reserve_percent": planning_reserve_percent,
         }
 
-    def update_runtime_settings(self, schedule_enabled: bool, snapshot_interval_minutes: int, retention_days: int) -> None:
-        self._validate_runtime_settings(snapshot_interval_minutes, retention_days)
+    def update_runtime_settings(
+        self,
+        schedule_enabled: bool,
+        snapshot_interval_minutes: int,
+        retention_days: int,
+        planning_reserve_percent: int = 20,
+    ) -> None:
+        self._validate_runtime_settings(snapshot_interval_minutes, retention_days, planning_reserve_percent)
         values = (
             (_SETTINGS_SCHEDULE_ENABLED, "1" if schedule_enabled else "0"),
             (_SETTINGS_INTERVAL_MINUTES, str(snapshot_interval_minutes)),
             (_SETTINGS_RETENTION_DAYS, str(retention_days)),
+            (_SETTINGS_PLANNING_RESERVE_PERCENT, str(planning_reserve_percent)),
         )
         with self._connection() as connection:
             connection.executemany(
@@ -442,11 +463,15 @@ class Store:
             return result.rowcount
 
     @staticmethod
-    def _validate_runtime_settings(snapshot_interval_minutes: int, retention_days: int) -> None:
+    def _validate_runtime_settings(
+        snapshot_interval_minutes: int, retention_days: int, planning_reserve_percent: int
+    ) -> None:
         if not 15 <= snapshot_interval_minutes <= 1_440:
             raise ValueError("Snapshot interval must be between 15 and 1440 minutes")
         if not 1 <= retention_days <= 3_650:
             raise ValueError("Report retention must be between 1 and 3650 days")
+        if not 0 <= planning_reserve_percent <= 50:
+            raise ValueError("Planning reserve must be between 0 and 50 percent")
 
     def _update_password_hash(self, username: str, password_hash: str) -> None:
         with self._connection() as connection:
