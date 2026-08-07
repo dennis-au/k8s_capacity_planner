@@ -6,7 +6,9 @@ At runtime KCP does not fetch public documentation, load CDN assets, send teleme
 
 ## Included Analysis
 
+- Management overview of total Node Capacity, Node Allocatable, scheduled requests, planning reserve, and planning-safe headroom.
 - Node allocatable capacity versus requested resources.
+- Resource-only fit estimates for proposed replicas and per-Pod CPU/memory requests, with optional namespace policy checks.
 - Container CPU/memory requests, limits, QoS, and near-limit usage when Metrics API is available.
 - Node pressure, ResourceQuota pressure, LimitRange coverage, HPA presence, and warning events.
 - Local source citations for every rule, backed by the embedded Kubernetes v1.36 guidance bundle.
@@ -25,7 +27,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.4 .
+docker build -t kcp:0.1.5 .
 ```
 
 ## Cluster Access
@@ -41,16 +43,16 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.4` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.5` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.4-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.4-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.5-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.5-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.4-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.4-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.5-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.5-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
@@ -77,7 +79,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.4
+  kcp:0.1.5
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -88,7 +90,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.4 \
+  --entrypoint python kcp:0.1.5 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
@@ -96,7 +98,7 @@ Open `https://<dashboard-host>:8443` and use `https://<dashboard-host>:8443/heal
 
 ## Cluster Connections
 
-KCP supports multiple Kubernetes API endpoints per dashboard deployment. The **Clusters** screen lets the local administrator add, select, and update read-only connections after signing in. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while manual refresh collects only the selected cluster.
+KCP supports multiple Kubernetes API endpoints per dashboard deployment. The **Clusters** screen lets the local administrator add, select, update, and take an immediate read-only snapshot for each connection after signing in. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while page-level refresh collects only the selected cluster.
 
 For a mounted kubeconfig, mount the kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. Uploaded and pasted kubeconfigs should include the credentials and CA data they need. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
 
