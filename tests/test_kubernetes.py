@@ -171,6 +171,8 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(snapshot.nodes[0].capacity.cpu_millicores, 2500)
         self.assertEqual(snapshot.nodes[0].capacity.memory_bytes, 3 * 1024**3)
         self.assertEqual(snapshot.nodes[0].allocatable.cpu_millicores, 2000)
+        for api in (collector.core, collector.apps, collector.autoscaling, collector.custom):
+            self.assertTrue(all(call[0].startswith("list_") for call in api.method_calls))
 
     def test_node_ready_distinguishes_ready_from_not_ready_conditions(self) -> None:
         ready = client.V1Node(

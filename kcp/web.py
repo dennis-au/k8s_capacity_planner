@@ -13,12 +13,11 @@ from typing import Any, Callable
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
 from markupsafe import Markup
 
-from kcp.allocation import DeploymentDemand, build_allocation_plan, evaluate_deployment_fit
+from kcp.allocation import build_allocation_plan, build_management_decision
 from kcp.config import RuntimeConfig
 from kcp.docs import DocumentRegistry, render_document
 from kcp.kubeconfig_files import MAX_KUBECONFIG_BYTES, KubeconfigFiles
 from kcp.kubernetes import KubernetesCollector, inspect_kubeconfig, inspect_kubeconfig_text
-from kcp.models import ResourceValues
 from kcp.service import CollectionService
 from kcp.store import Store
 
@@ -160,17 +159,12 @@ def create_app(
             active_cluster["id"] if active_cluster else None,
             int(runtime_settings["planning_reserve_percent"]),
         )
-        quality = _report_quality(record, int(runtime_settings["snapshot_interval_minutes"]))
         return _render(
-            "Overview",
-            _OVERVIEW_PAGE_TEMPLATE,
+            "Dashboard",
+            _DASHBOARD_PAGE_TEMPLATE,
             record=record,
-            summary=_summary(record),
             plan=plan,
             capacity_charts=_capacity_charts(plan),
-            quality=quality,
-            priority_findings=_priority_findings(record),
-            service=service,
             connection=active_cluster,
         )
 
@@ -185,16 +179,25 @@ def create_app(
         for cluster in store.list_clusters():
             record = store.latest_snapshot(cluster["id"])
             plan = _allocation_plan(
-                store, docs, record, cluster["id"], int(runtime_settings["planning_reserve_percent"])
+                store,
+                docs,
+                record,
+                cluster["id"],
+                int(runtime_settings["planning_reserve_percent"]),
+                include_history=True,
             )
+            quality = _report_quality(record, int(runtime_settings["snapshot_interval_minutes"]))
             clusters.append(
                 cluster
                 | {
                     "capacity_status": plan.capacity_status if plan else None,
-                    "report_quality": _report_quality(record, int(runtime_settings["snapshot_interval_minutes"])),
+                    "decision": _management_decision(plan, quality),
+                    "planning_safe": plan.total_planning_safe if plan else None,
+                    "trend": plan.trend if plan else None,
+                    "report_quality": quality,
                 }
             )
-        return _render("Clusters", _CLUSTERS_TEMPLATE, clusters=clusters)
+        return _render("Clusters", _MANAGEMENT_CLUSTERS_TEMPLATE, clusters=clusters)
 
     @app.route("/clusters/new", methods=["GET", "POST"])
     def new_cluster() -> Response | str:
@@ -351,7 +354,7 @@ def create_app(
             findings = [finding for finding in findings if finding["severity"] == severity]
         return _render("Findings", _FINDINGS_TEMPLATE, record=record, findings=findings, severity=severity)
 
-    @app.route("/allocation", methods=["GET", "POST"])
+    @app.get("/allocation")
     def allocation() -> str:
         active_cluster = _active_cluster(store)
         record = store.latest_snapshot(active_cluster["id"]) if active_cluster else None
@@ -365,29 +368,11 @@ def create_app(
             include_history=True,
         )
         quality = _report_quality(record, int(runtime_settings["snapshot_interval_minutes"]))
-        fit_form = _empty_fit_form()
-        fit = None
-        if request.method == "POST":
-            _validate_csrf()
-            fit_form = _fit_form_values()
-            if record is None or plan is None:
-                flash("Collect a snapshot before evaluating a deployment fit.", "error")
-            else:
-                try:
-                    fit = evaluate_deployment_fit(
-                        record["payload"]["snapshot"], plan, _deployment_demand(fit_form), docs
-                    )
-                except ValueError as exc:
-                    flash(str(exc), "error")
-        namespaces = _snapshot_section(record, "namespaces")
         return _render(
             "Allocation",
-            _ALLOCATION_PAGE_TEMPLATE,
+            _ALLOCATION_TEMPLATE,
             record=record,
             plan=plan,
-            fit=fit,
-            fit_form=fit_form,
-            namespaces=namespaces,
             quality=quality,
         )
 
@@ -413,10 +398,21 @@ def create_app(
         return _render("Workloads", _WORKLOADS_TEMPLATE, record=record, workloads=workloads)
 
     @app.get("/history")
-    def history() -> str:
+    @app.get("/reports")
+    def reports() -> str:
         active_cluster = _active_cluster(store)
         snapshots = store.list_snapshots(active_cluster["id"]) if active_cluster else []
-        return _render("History", _HISTORY_TEMPLATE, snapshots=snapshots)
+        runtime_settings = service.runtime_settings()
+        record = snapshots[0] if snapshots else None
+        plan = _allocation_plan(
+            store,
+            docs,
+            record,
+            active_cluster["id"] if active_cluster else None,
+            int(runtime_settings["planning_reserve_percent"]),
+            include_history=True,
+        )
+        return _render("Reports", _REPORTS_TEMPLATE, snapshots=snapshots, plan=plan)
 
     @app.get("/docs")
     def documentation() -> str:
@@ -478,7 +474,8 @@ def create_app(
             "show_refresh": authenticated
             and active_cluster is not None
             and not active_cluster["legacy_connection"]
-            and title not in {"Documentation", "Clusters", "Add cluster", "Edit cluster", "Remove cluster", "Account", "Settings"},
+            and title
+            not in {"Documentation", "Clusters", "Add cluster", "Edit cluster", "Remove cluster", "Account", "Settings", "Reports"},
             "format_cpu": _format_cpu,
             "format_cpu_raw": _format_cpu_raw,
             "format_bytes": _format_bytes,
@@ -548,34 +545,14 @@ def _allocation_plan(
     )
 
 
-def _priority_findings(record: dict[str, Any] | None) -> list[dict[str, Any]]:
-    findings = (record or {"payload": {}})["payload"].get("findings", [])
-    return [finding for finding in findings if finding.get("severity") in {"critical", "warning"}][:5]
-
-
-def _empty_fit_form() -> dict[str, str]:
-    return {"replicas": "1", "cpu_request": "", "memory_request": "", "namespace": ""}
-
-
-def _fit_form_values() -> dict[str, str]:
-    return {
-        "replicas": request.form.get("replicas", "").strip(),
-        "cpu_request": request.form.get("cpu_request", "").strip(),
-        "memory_request": request.form.get("memory_request", "").strip(),
-        "namespace": request.form.get("namespace", "").strip(),
-    }
-
-
-def _deployment_demand(form: dict[str, str]) -> DeploymentDemand:
-    try:
-        replicas = int(form["replicas"])
-    except ValueError as exc:
-        raise ValueError("replicas must be a whole number") from exc
-    try:
-        requests = ResourceValues.from_quantities({"cpu": form["cpu_request"], "memory": form["memory_request"]})
-    except ValueError as exc:
-        raise ValueError("CPU and memory requests must use valid Kubernetes quantities") from exc
-    return DeploymentDemand(replicas=replicas, requests=requests, namespace=form["namespace"] or None)
+def _management_decision(plan: Any | None, quality: ReportQuality | None) -> Any | None:
+    if plan is None:
+        return None
+    return build_management_decision(
+        plan,
+        quality.state if quality else "Unknown",
+        quality.warnings if quality else ["No report quality is available."],
+    )
 
 
 def _cluster_form_values() -> dict[str, str]:
@@ -831,12 +808,36 @@ def _export_payload(record: dict[str, Any], plan: Any, quality: ReportQuality | 
     payload = dict(record["payload"])
     if plan is None:
         return payload
+    decision = _management_decision(plan, quality)
     payload["management_capacity"] = {
         "state": plan.capacity_status.state,
         "confidence": plan.capacity_status.confidence,
         "summary": plan.capacity_status.summary,
         "blockers": plan.capacity_status.blockers,
         "planning_reserve_percent": plan.planning_reserve_percent,
+        "decision": {
+            "state": decision.state if decision else "Decision Needs Review",
+            "summary": decision.summary if decision else "No management decision is available.",
+            "reasons": decision.reasons if decision else [],
+            "scheduling_confidence": decision.scheduling_confidence if decision else "Unknown",
+            "observed_usage": decision.observed_usage if decision else "Observed usage unavailable",
+        },
+        "technical_capacity_status": {
+            "state": plan.capacity_status.state,
+            "confidence": plan.capacity_status.confidence,
+            "summary": plan.capacity_status.summary,
+            "blockers": plan.capacity_status.blockers,
+        },
+        "capacity_flow": {
+            "total_node_capacity": _resource_export(plan.total_node_capacity),
+            "not_allocatable_to_pods": _resource_export(plan.total_not_allocatable),
+            "node_allocatable": _resource_export(plan.total_allocatable),
+            "scheduled_requests": _resource_export(plan.total_requested),
+            "raw_remaining": _resource_export(plan.total_remaining),
+            "planning_safe_capacity": _resource_export(plan.total_planning_safe),
+            "planning_reserve_percent": plan.planning_reserve_percent,
+            "planning_reserve_label": "KCP planning policy, not a Kubernetes-mandated threshold",
+        },
         "raw_remaining": {
             "cpu_millicores": plan.total_remaining.cpu_millicores,
             "memory_bytes": plan.total_remaining.memory_bytes,
@@ -867,19 +868,26 @@ def _markdown_export(record: dict[str, Any], plan: Any, quality: ReportQuality |
         "",
     ]
     if plan is not None:
+        decision = _management_decision(plan, quality)
         lines.extend(
             [
                 "## Management Capacity",
                 "",
-                f"State: {plan.capacity_status.state}",
-                f"Confidence: {plan.capacity_status.confidence}",
-                f"Planning reserve: {plan.planning_reserve_percent}% (KCP policy)",
-                "Planning-safe capacity: "
-                f"{_format_cpu(plan.total_planning_safe.cpu_millicores)} CPU / "
-                f"{_format_bytes(plan.total_planning_safe.memory_bytes)} memory",
-                "Raw remaining capacity: "
-                f"{_format_cpu(plan.total_remaining.cpu_millicores)} CPU / "
-                f"{_format_bytes(plan.total_remaining.memory_bytes)} memory",
+                f"Management decision: {decision.state if decision else 'Decision Needs Review'}",
+                f"Decision evidence: {decision.summary if decision else 'No management decision is available.'}",
+                f"Scheduling capacity: {decision.scheduling_confidence if decision else 'Unknown'}",
+                f"Observed usage: {decision.observed_usage if decision else 'Observed usage unavailable'}",
+                f"Technical capacity status: {plan.capacity_status.state} ({plan.capacity_status.confidence})",
+                "",
+                "### Capacity Flow",
+                "",
+                f"Total Node Capacity: {_resource_text(plan.total_node_capacity)}",
+                f"Not allocatable to Pods: {_resource_text(plan.total_not_allocatable)}",
+                f"Node Allocatable: {_resource_text(plan.total_allocatable)}",
+                f"Scheduled Requests: {_resource_text(plan.total_requested)}",
+                f"Raw Remaining: {_resource_text(plan.total_remaining)}",
+                f"Planning-safe capacity: {_resource_text(plan.total_planning_safe)}",
+                f"Planning reserve: {plan.planning_reserve_percent}% (KCP planning policy, not a Kubernetes-mandated threshold)",
                 f"Local source: /docs/{plan.capacity_source['document_id']} ({plan.capacity_source['section']})",
                 "",
             ]
@@ -898,6 +906,24 @@ def _markdown_export(record: dict[str, Any], plan: Any, quality: ReportQuality |
         lines.append(f"  {finding['evidence']}")
         lines.append(f"  Local source: /docs/{finding['source']['document_id']} ({finding['source']['section']})")
     return "\n".join(lines) + "\n"
+
+
+def _resource_export(resources: Any | None) -> dict[str, int] | None:
+    if resources is None:
+        return None
+    return {
+        "cpu_millicores": resources.cpu_millicores,
+        "memory_bytes": resources.memory_bytes,
+    }
+
+
+def _resource_text(resources: Any | None) -> str:
+    if resources is None:
+        return "Not recorded"
+    return (
+        f"{_format_cpu(resources.cpu_millicores)} CPU ({_format_cpu_raw(resources.cpu_millicores)}) / "
+        f"{_format_bytes(resources.memory_bytes)} memory ({_format_bytes_raw(resources.memory_bytes)})"
+    )
 
 
 def _html_export(record: dict[str, Any], plan: Any, quality: ReportQuality | None) -> str:
@@ -927,11 +953,12 @@ class _LoginThrottle:
 _BASE_TEMPLATE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ title }} | KCP</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}"></head><body>
-{% if authenticated %}
-<header class="topbar"><a class="brand" href="{{ url_for('overview') }}">KCP <span>Capacity Planner</span></a>
-<nav aria-label="Primary"><a href="{{ url_for('overview') }}">Overview</a><a href="{{ url_for('allocation') }}">Allocation</a><a href="{{ url_for('clusters') }}">Clusters</a><a href="{{ url_for('findings') }}">Findings</a><a href="{{ url_for('nodes') }}">Nodes</a><a href="{{ url_for('namespaces') }}">Namespaces</a><a href="{{ url_for('workloads') }}">Workloads</a><a href="{{ url_for('history') }}">History</a><a href="{{ url_for('documentation') }}">Docs</a><a href="{{ url_for('settings') }}">Settings</a><a href="{{ url_for('account') }}">Account</a></nav>
-{% if clusters %}<form class="cluster-switcher" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ current_path }}"><label for="active-cluster">Active cluster</label><select id="active-cluster" name="cluster_id">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if active_cluster and cluster.id == active_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select><button class="quiet" type="submit">Use</button></form>{% endif %}
-<form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet" type="submit">Sign out</button></form></header>
+{% if authenticated %}<div class="app-shell">
+<aside class="topbar sidebar"><a class="brand" href="{{ url_for('overview') }}"><span class="brand-mark" aria-hidden="true">K</span><span>KCP</span><small>Capacity Planner</small></a>
+<nav aria-label="Primary"><a class="{% if current_path == '/' %}active{% endif %}" href="{{ url_for('overview') }}">Dashboard</a><a class="{% if current_path.startswith('/clusters') %}active{% endif %}" href="{{ url_for('clusters') }}">Clusters</a><a class="{% if current_path == '/reports' or current_path == '/history' %}active{% endif %}" href="{{ url_for('reports') }}">Reports</a></nav>
+<details class="nav-menu operation-menu" {% if current_path in ['/allocation', '/findings', '/nodes', '/namespaces', '/workloads', '/docs'] or current_path.startswith('/docs/') %}open{% endif %}><summary>Operations</summary><div><a class="{% if current_path == '/allocation' %}active{% endif %}" href="{{ url_for('allocation') }}">Capacity planning</a><a class="{% if current_path == '/findings' %}active{% endif %}" href="{{ url_for('findings') }}">Findings</a><a class="{% if current_path == '/nodes' %}active{% endif %}" href="{{ url_for('nodes') }}">Nodes</a><a class="{% if current_path == '/namespaces' %}active{% endif %}" href="{{ url_for('namespaces') }}">Namespaces</a><a class="{% if current_path == '/workloads' %}active{% endif %}" href="{{ url_for('workloads') }}">Workloads</a><a class="{% if current_path.startswith('/docs') %}active{% endif %}" href="{{ url_for('documentation') }}">Local docs</a></div></details>
+<details class="nav-menu manage-menu" {% if current_path in ['/settings', '/account'] %}open{% endif %}><summary>Manage</summary><div><a class="{% if current_path == '/settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a><a class="{% if current_path == '/account' %}active{% endif %}" href="{{ url_for('account') }}">Account</a></div></details>
+</aside><section class="workspace"><header class="workspace-header"><div class="workspace-context"><span>Active cluster</span><strong>{{ active_cluster.name if active_cluster else 'Not configured' }}</strong></div><div class="workspace-actions">{% if clusters %}<form class="cluster-switcher" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ current_path }}"><label for="active-cluster">Active cluster</label><select id="active-cluster" name="cluster_id">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if active_cluster and cluster.id == active_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select><button class="quiet" type="submit">Use</button></form>{% endif %}<form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet" type="submit">Sign out</button></form></div></header>
 {% endif %}
 <main class="page"><div class="page-heading"><div><p class="eyebrow">{{ active_cluster.name if active_cluster else 'Dark-site operation' }}</p><h1>{{ title }}</h1></div>{% if show_refresh %}<form method="post" action="{{ url_for('collect') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Refresh</button></form>{% endif %}</div>
 {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ category }}">{{ message }}</p>{% endfor %}{% endwith %}
@@ -975,6 +1002,13 @@ _REPORT_QUALITY_TEMPLATE = """
 {% if quality.warnings %}<section class="collection-limitations"><div><p class="eyebrow">Data quality</p><h2>Collection limitations</h2><p>{{ quality.message }}</p></div><ul>{% for warning in quality.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
 {% endif %}
 """
+
+_DASHBOARD_TEMPLATE = """{% if not record %}<section class="empty"><div class="empty-copy">{% if connection %}<p class="eyebrow">First report</p><h2>No snapshots collected</h2><p>Confirm the active cluster connection, then collect the first read-only snapshot.</p><a class="button-link" href="{{ url_for('clusters') }}">Review clusters</a>{% else %}<p class="eyebrow">First cluster</p><h2>Add a cluster</h2><p>Add a read-only kubeconfig to begin capacity planning.</p><a class="button-link" href="{{ url_for('new_cluster') }}">Add cluster</a>{% endif %}</div><dl class="empty-details"><div><dt>Active cluster</dt><dd>{{ connection.name if connection else 'Not configured' }}</dd></div><div><dt>API endpoint</dt><dd>{{ connection.endpoint if connection else 'Unavailable' }}</dd></div><div><dt>Collection mode</dt><dd>Read-only</dd></div></dl></section>{% else %}
+<div class="overview-dashboard">
+  <section class="capacity-chart-panel" aria-labelledby="capacity-composition-title"><header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From total resources to safe capacity</h2><p>Total node capacity, Kubernetes allocatable capacity, declared Pod requests, the KCP reserve, and capacity safe for new demand.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>{% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total node capacity</small></div><div class="capacity-chart-outcome"><span>Safe capacity</span><strong>{{ chart.safe_display }}</strong><small>{{ chart.safe_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition"><title>{{ chart.resource }} capacity composition</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect Node Capacity and render the capacity flow.</p>{% endif %}<p class="capacity-chart-note"><strong>Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Held or unavailable</strong> includes the KCP planning reserve and capacity on ineligible nodes. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p></section>
+</div>{% endif %}"""
+
+_DASHBOARD_PAGE_TEMPLATE = _DASHBOARD_TEMPLATE
 
 _OVERVIEW_PAGE_TEMPLATE = _REPORT_QUALITY_TEMPLATE + _OVERVIEW_TEMPLATE
 
@@ -1025,7 +1059,11 @@ _WORKLOADS_TEMPLATE = """<table><thead><tr><th>Workload</th><th>Replicas</th><th
 
 _HISTORY_TEMPLATE = """<table><thead><tr><th>ID</th><th>Collected</th><th>Kubernetes</th><th>Exports</th></tr></thead><tbody>{% for snapshot in snapshots %}<tr><td>{{ snapshot.id }}</td><td>{{ snapshot.collected_at }}</td><td>{{ snapshot.cluster_version }}</td><td><a href="{{ url_for('export', snapshot_ref=snapshot.id, format_name='json') }}">JSON</a> <a href="{{ url_for('export', snapshot_ref=snapshot.id, format_name='md') }}">Markdown</a> <a href="{{ url_for('export', snapshot_ref=snapshot.id, format_name='html') }}">HTML</a></td></tr>{% else %}<tr><td colspan="4">No stored snapshots.</td></tr>{% endfor %}</tbody></table>"""
 
+_REPORTS_TEMPLATE = """<section class="reports-intro"><div><p class="eyebrow">Historical evidence</p><h2>Stored capacity reports</h2><p>Reports remain isolated to the active cluster and can be exported for management review.</p></div>{% if plan %}<dl><dt>30-day trend evidence</dt><dd>{{ plan.trend.confidence }}: {{ plan.trend.sample_count }} snapshots across {{ plan.trend.span_days }} days.</dd><dt>Current trend</dt><dd>{{ plan.trend.state }}</dd></dl>{% endif %}</section>""" + _HISTORY_TEMPLATE
+
 _CLUSTERS_TEMPLATE = """<section><div class="section-heading"><div><h2>Configured clusters</h2><p>Management capacity is calculated from each cluster's own latest snapshot. Reports and exports remain isolated.</p></div><a class="button-link" href="{{ url_for('new_cluster') }}">Add cluster</a></div><table class="cluster-table"><thead><tr><th>Cluster</th><th>Context</th><th>API endpoint</th><th>Last snapshot</th><th>Management capacity</th><th>Active</th><th>Actions</th></tr></thead><tbody>{% for cluster in clusters %}<tr><td><a href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">{{ cluster.name }}</a></td><td>{{ cluster.kube_context if not cluster.legacy_connection else 'Update required' }}</td><td>{{ cluster.endpoint or 'Unavailable' }}</td><td>{{ cluster.last_collected_at or 'Not collected' }}</td><td>{% if cluster.capacity_status %}<span class="capacity-badge compact {{ cluster.capacity_status.state|lower }}">{{ cluster.capacity_status.state }}</span><span class="cell-note">{{ cluster.capacity_status.confidence }}</span>{% else %}<span class="badge warning">No report</span>{% endif %}</td><td>{% if active_cluster and cluster.id == active_cluster.id %}<span class="badge info">Active</span>{% else %}<form class="inline-form" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="cluster_id" value="{{ cluster.id }}"><input type="hidden" name="next" value="{{ url_for('overview') }}"><button class="quiet" type="submit">Use</button></form>{% endif %}</td><td><div class="table-actions">{% if not cluster.legacy_connection %}<form method="post" action="{{ url_for('take_cluster_snapshot', cluster_id=cluster.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet table-action-button" type="submit">Take snapshot</button></form>{% endif %}<a class="quiet-link" href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">Edit</a><a class="quiet-link danger-link" href="{{ url_for('remove_cluster', cluster_id=cluster.id) }}">Remove</a></div></td></tr>{% else %}<tr><td colspan="7">No clusters configured.</td></tr>{% endfor %}</tbody></table></section>"""
+
+_MANAGEMENT_CLUSTERS_TEMPLATE = """<section><div class="section-heading"><div><p class="eyebrow">Cluster portfolio</p><h2>Configured clusters</h2><p>Each management decision is calculated from its own latest snapshot. Reports remain isolated.</p></div><a class="button-link" href="{{ url_for('new_cluster') }}">Add cluster</a></div><table class="cluster-table"><thead><tr><th>Cluster</th><th>Last snapshot</th><th>Management decision</th><th>Safe CPU / memory</th><th>30-day trend</th><th>Connection</th><th>Actions</th></tr></thead><tbody>{% for cluster in clusters %}<tr><td><a href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">{{ cluster.name }}</a><span class="cell-note">{{ cluster.kube_context if not cluster.legacy_connection else 'Update required' }}</span></td><td>{% if cluster.report_quality %}{{ cluster.last_collected_at }}<br><span class="cell-note">{{ cluster.report_quality.state }}</span>{% else %}Not collected{% endif %}</td><td>{% if cluster.decision %}<span class="capacity-badge compact {{ cluster.decision.state|lower|replace(' ', '-') }}">{{ cluster.decision.state }}</span><p class="table-summary">{{ cluster.decision.summary }}</p>{% else %}<span class="badge warning">No report</span>{% endif %}</td><td>{% if cluster.planning_safe %}{{ format_cpu(cluster.planning_safe.cpu_millicores) }}<br><span class="cell-note">{{ format_bytes(cluster.planning_safe.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td><td>{% if cluster.trend %}<strong>{{ cluster.trend.state }}</strong><br><span class="cell-note">{{ cluster.trend.confidence }}</span>{% else %}Unavailable{% endif %}</td><td>{% if active_cluster and cluster.id == active_cluster.id %}<span class="badge info">Active</span>{% else %}<form class="inline-form" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="cluster_id" value="{{ cluster.id }}"><input type="hidden" name="next" value="{{ url_for('overview') }}"><button class="quiet" type="submit">Use</button></form>{% endif %}</td><td><div class="table-actions">{% if not cluster.legacy_connection %}<form method="post" action="{{ url_for('take_cluster_snapshot', cluster_id=cluster.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet table-action-button" type="submit">Take snapshot</button></form>{% endif %}<a class="quiet-link" href="{{ url_for('edit_cluster', cluster_id=cluster.id) }}">Edit</a><a class="quiet-link danger-link" href="{{ url_for('remove_cluster', cluster_id=cluster.id) }}">Remove</a></div></td></tr>{% else %}<tr><td colspan="7">No clusters configured.</td></tr>{% endfor %}</tbody></table></section>"""
 
 _CLUSTER_FORM_TEMPLATE = """
 <div class="cluster-layout">
@@ -1103,4 +1141,4 @@ _DOCS_TEMPLATE = """<form class="search" method="get"><label>Search bundled Kube
 
 _DOCUMENT_TEMPLATE = """<section class="doc-reader-header"><a class="back-link" href="{{ url_for('documentation') }}">Back to local docs</a><p class="eyebrow">Offline Kubernetes reference</p><h2>{{ document.title }}</h2><p>Bundled for dark-site use. This article is local; its source details remain available below.</p><details class="doc-provenance"><summary>Source details</summary><dl><dt>Kubernetes baseline</dt><dd>{{ kubernetes_version }}</dd><dt>Source revision</dt><dd><code>{{ document.source_revision }}</code></dd><dt>Canonical source</dt><dd>{{ document.canonical_url }}</dd></dl></details></section><section class="doc-reading-layout">{% if article.headings %}<aside class="doc-toc" aria-label="On this page"><p>On this page</p><ol>{% for heading in article.headings %}<li><a href="#{{ heading.anchor }}">{{ heading.title }}</a></li>{% endfor %}</ol></aside>{% endif %}<article class="doc-article">{{ article.content }}</article></section>"""
 
-_BASE_TEMPLATE += "</main></body></html>"
+_BASE_TEMPLATE += "</main>{% if authenticated %}</section></div>{% endif %}</body></html>"

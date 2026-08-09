@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from kcp.allocation import build_allocation_plan
+from kcp.allocation import DeploymentDemand, build_allocation_plan, build_management_decision, evaluate_deployment_fit
 from kcp.docs import DocumentRegistry
+from kcp.models import ResourceValues
 
 
 class AllocationPlanTests(unittest.TestCase):
@@ -195,3 +197,218 @@ class AllocationPlanTests(unittest.TestCase):
         self.assertIn("MemoryPressure", pressure_plan.capacity_status.summary)
         self.assertEqual(unavailable_plan.capacity_status.state, "Blocked")
         self.assertIn("No Ready", unavailable_plan.capacity_status.summary)
+
+    def test_management_decision_requires_expansion_when_safe_capacity_is_exhausted(self) -> None:
+        snapshot = _snapshot_at(
+            datetime(2026, 8, 7, tzinfo=UTC),
+            requested_cpu=800,
+            requested_memory=600,
+        )
+
+        plan = build_allocation_plan(snapshot, [snapshot], self.docs, planning_reserve_percent=20)
+        decision = build_management_decision(plan, report_state="Current", report_warnings=[])
+
+        self.assertEqual(decision.state, "Expansion Required")
+        self.assertEqual(decision.scheduling_confidence, "Current request-based data")
+        self.assertEqual(decision.observed_usage, "Observed usage unavailable")
+        self.assertIn("planning-safe CPU", decision.summary)
+
+    def test_management_decision_requires_review_for_stale_or_pressured_data(self) -> None:
+        current = _snapshot_at(
+            datetime(2026, 8, 7, tzinfo=UTC),
+            requested_cpu=100,
+            requested_memory=100,
+        )
+        plan = build_allocation_plan(current, [current], self.docs, planning_reserve_percent=20)
+
+        stale = build_management_decision(plan, report_state="Stale", report_warnings=[])
+
+        self.assertEqual(stale.state, "Decision Needs Review")
+        self.assertIn("stale", stale.summary.lower())
+
+        pressured = _snapshot_at(
+            datetime(2026, 8, 7, tzinfo=UTC),
+            requested_cpu=100,
+            requested_memory=100,
+            conditions=["MemoryPressure"],
+        )
+        pressured_plan = build_allocation_plan(pressured, [pressured], self.docs, planning_reserve_percent=20)
+        decision = build_management_decision(pressured_plan, report_state="Current", report_warnings=[])
+
+        self.assertEqual(decision.state, "Decision Needs Review")
+        self.assertIn("MemoryPressure", decision.summary)
+
+    def test_request_trend_flags_expansion_with_preliminary_confidence(self) -> None:
+        newest_at = datetime(2026, 8, 7, tzinfo=UTC)
+        older = _snapshot_at(
+            newest_at - timedelta(days=2), requested_cpu=200, requested_memory=200
+        )
+        newest = _snapshot_at(newest_at, requested_cpu=700, requested_memory=200)
+
+        plan = build_allocation_plan(newest, [newest, older], self.docs, planning_reserve_percent=20)
+        decision = build_management_decision(plan, report_state="Current", report_warnings=[])
+
+        self.assertEqual(plan.trend.state, "Expansion Planning Required")
+        self.assertEqual(plan.trend.confidence, "Preliminary trend")
+        self.assertEqual(plan.trend.sample_count, 2)
+        self.assertEqual(plan.trend.span_days, 2)
+        self.assertEqual(decision.state, "Expansion Planning Required")
+        self.assertIn("within 30 days", decision.summary)
+
+    def test_request_trend_stays_available_when_metrics_are_missing(self) -> None:
+        newest_at = datetime(2026, 8, 7, tzinfo=UTC)
+        older = _snapshot_at(
+            newest_at - timedelta(days=10), requested_cpu=100, requested_memory=100
+        )
+        newest = _snapshot_at(newest_at, requested_cpu=200, requested_memory=200)
+
+        plan = build_allocation_plan(newest, [newest, older], self.docs, planning_reserve_percent=20)
+
+        self.assertEqual(plan.trend.state, "Capacity Available")
+        self.assertEqual(plan.trend.confidence, "Preliminary trend")
+        self.assertEqual(plan.capacity_status.confidence, "Request-based")
+
+    def test_deployment_approval_reports_capacity_gaps_and_per_pod_fit(self) -> None:
+        snapshot = {
+            "metrics_available": False,
+            "nodes": [
+                {
+                    "name": "worker-a",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 500, "memory_bytes": 500},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                },
+                {
+                    "name": "worker-b",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 500, "memory_bytes": 500},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                },
+            ],
+            "namespaces": [],
+            "workloads": [],
+        }
+        plan = build_allocation_plan(snapshot, [], self.docs, planning_reserve_percent=20)
+
+        approved = evaluate_deployment_fit(
+            snapshot,
+            plan,
+            DeploymentDemand(1, ResourceValues(cpu_millicores=200, memory_bytes=200)),
+            self.docs,
+        )
+        blocked = evaluate_deployment_fit(
+            snapshot,
+            plan,
+            DeploymentDemand(3, ResourceValues(cpu_millicores=300, memory_bytes=300)),
+            self.docs,
+        )
+        per_pod = evaluate_deployment_fit(
+            snapshot,
+            plan,
+            DeploymentDemand(1, ResourceValues(cpu_millicores=400, memory_bytes=400)),
+            self.docs,
+        )
+
+        self.assertEqual(approved.status, "Approved")
+        self.assertTrue(approved.approved)
+        self.assertEqual(approved.capacity_shortfall, ResourceValues())
+        self.assertFalse(approved.policy_blocked)
+        self.assertEqual(blocked.status, "Not approved")
+        self.assertFalse(blocked.approved)
+        self.assertTrue(blocked.capacity_blocked)
+        self.assertEqual(blocked.maximum_safe_replicas, 2)
+        self.assertEqual(blocked.capacity_shortfall.cpu_millicores, 300)
+        self.assertEqual(blocked.capacity_shortfall.memory_bytes, 300)
+        self.assertEqual(per_pod.maximum_safe_replicas, 0)
+        self.assertEqual(per_pod.per_pod_shortfall.cpu_millicores, 100)
+        self.assertEqual(per_pod.per_pod_shortfall.memory_bytes, 100)
+
+    def test_deployment_approval_separates_policy_and_data_quality_blockers(self) -> None:
+        snapshot = {
+            "metrics_available": False,
+            "nodes": [
+                {
+                    "name": "worker-a",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 0, "memory_bytes": 0},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                }
+            ],
+            "namespaces": [
+                {
+                    "name": "payments",
+                    "quotas": {
+                        "requests.cpu": {"used": 800, "hard": 1_000},
+                        "requests.memory": {"used": 800, "hard": 1_000},
+                    },
+                    "limit_ranges": [
+                        {"type": "Pod", "minimum": {"cpu_millicores": 300, "memory_bytes": 300}},
+                    ],
+                }
+            ],
+            "workloads": [],
+        }
+        plan = build_allocation_plan(snapshot, [], self.docs, planning_reserve_percent=20)
+        demand = DeploymentDemand(1, ResourceValues(cpu_millicores=200, memory_bytes=200), "payments")
+
+        policy = evaluate_deployment_fit(snapshot, plan, demand, self.docs)
+        stale = evaluate_deployment_fit(snapshot, plan, demand, self.docs, report_state="Stale")
+
+        self.assertEqual(policy.status, "Not approved")
+        self.assertFalse(policy.capacity_blocked)
+        self.assertTrue(policy.policy_blocked)
+        self.assertFalse(policy.approved)
+        self.assertTrue(all(issue.category == "policy" for issue in policy.issues))
+        self.assertEqual(stale.status, "Review required")
+        self.assertTrue(stale.review_required)
+        self.assertTrue(any(issue.category == "data-quality" for issue in stale.issues))
+
+    def test_deployment_approval_requires_review_for_node_pressure_without_namespace(self) -> None:
+        snapshot = _snapshot_at(
+            datetime(2026, 8, 7, tzinfo=UTC),
+            requested_cpu=100,
+            requested_memory=100,
+            conditions=["MemoryPressure"],
+        )
+        plan = build_allocation_plan(snapshot, [], self.docs, planning_reserve_percent=20)
+
+        fit = evaluate_deployment_fit(
+            snapshot,
+            plan,
+            DeploymentDemand(1, ResourceValues(cpu_millicores=100, memory_bytes=100)),
+            self.docs,
+        )
+
+        self.assertEqual(fit.status, "Review required")
+        self.assertTrue(fit.review_required)
+        self.assertFalse(fit.policy_blocked)
+
+
+def _snapshot_at(
+    collected_at: datetime,
+    requested_cpu: int,
+    requested_memory: int,
+    conditions: list[str] | None = None,
+) -> dict:
+    return {
+        "collected_at": collected_at.isoformat(),
+        "metrics_available": False,
+        "nodes": [
+            {
+                "name": "worker-a",
+                "capacity": {"cpu_millicores": 1200, "memory_bytes": 1200},
+                "allocatable": {"cpu_millicores": 1000, "memory_bytes": 1000},
+                "requested": {"cpu_millicores": requested_cpu, "memory_bytes": requested_memory},
+                "conditions": conditions or [],
+                "ready": True,
+                "schedulable": True,
+            }
+        ],
+        "workloads": [],
+    }

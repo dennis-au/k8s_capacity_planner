@@ -1,4 +1,4 @@
-# Lab110 KCP Validation Status
++# Lab110 KCP Validation Status
 
 Last updated: August 6, 2026
 
@@ -86,3 +86,38 @@ All `PROMPT.md` done-when conditions are satisfied for the `lab110` validation. 
 - Actual lab110 Markdown and JSON export routes returned `200` and included planning-safe capacity, the local Node Allocatable source, and management capacity metadata. Automated tests cover active-cluster isolation and zero Kubernetes write actions.
 - The updated dashboard now runs at `http://127.0.0.1:5056` using the existing local SQLite database and session secret.
 - Final validation: `.venv/bin/python -m unittest discover -s tests -v` passed (61 tests); the live Overview rendered without browser console errors.
+
+
+## Management Capacity Decision Dashboard Redesign
+
+Last updated: August 7, 2026
+
+### Milestone 1: Complete
+
+- Implemented the management decision model: request-based planning-safe capacity trend, the four management states, and separate scheduling, trend, and observed-usage confidence.
+- Validation: `.venv/bin/python -m unittest tests.test_allocation -v` passed (8 tests).
+
+### Milestone 2: Complete
+
+- Dashboard now leads with an executive capacity decision, full Total Node Capacity-to-Planning-safe Capacity flow, raw CPU/memory values, 30-day trend evidence, data quality, local Kubernetes source, and next action.
+- Primary navigation is Dashboard, Clusters, and Reports. Operations retains technical evidence; Manage holds Settings and Account. Clusters presents isolated management summaries.
+- Validation: `.venv/bin/python -m unittest tests.test_allocation tests.test_web -v` passed (32 tests). An isolated desktop and 390px mobile browser check confirmed readable decision evidence, raw figures, data-quality limitations, no horizontal overflow, and no console errors.
+
+### Milestone 3: Complete
+
+- Dashboard now provides the CSRF-protected `Can this deployment be approved?` flow; Operations Capacity planning retains technical evidence without a duplicate approval form.
+- The result shows total requested CPU/memory, maximum safe replicas, capacity shortfall, and single-Pod shortfall where applicable. ResourceQuota and LimitRange blockers are clearly separated from capacity gaps; stale data and node pressure require review instead of an expansion recommendation.
+- Validation: `.venv/bin/python -m unittest tests.test_allocation tests.test_web -v` passed (35 tests). An isolated browser submission rendered a stale-data `Review required` result with total requests, follow-up action, local Kubernetes citation, and no console errors.
+
+### Milestone 4: Complete
+
+- Reports, legacy `/history`, and JSON/Markdown/HTML exports now carry the same management decision as Dashboard plus the full Total Node Capacity-to-Planning-safe Capacity evidence and raw values.
+- Exports preserve the existing technical status while adding the management decision, local Node Allocatable citation, and an explicit `KCP planning policy` reserve label. Operations direct routes and bundled local documentation remain available offline.
+- Validation: `.venv/bin/python -m unittest tests.test_web tests.test_docs -v` passed (29 tests), including active-cluster isolation, legacy history, local-doc rendering, export provenance, and no remote documentation links.
+
+### Milestone 5: Complete
+
+- Authenticated acceptance used an isolated local runtime with representative read-only cluster data. Dashboard displayed the stale-snapshot decision, Metrics API absence, preliminary trend, local evidence, and deployment approval flow; Clusters, Reports, and Operations displayed their expected isolated views.
+- Desktop and 390px mobile browser checks found no horizontal overflow and no browser console errors. The deployment approval form remains on Dashboard while Operations Capacity planning remains technical evidence only.
+- Validation: `.venv/bin/python -m unittest discover -s tests -v` passed (77 tests). The collector test now asserts all collection client calls are `list_*`; source inspection found no Kubernetes write methods in `kcp/kubernetes.py`.
+- Live-cluster limitation: this management-redesign acceptance did not access `lab110` or any production Kubernetes endpoint.

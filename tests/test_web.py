@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -88,8 +89,8 @@ class DashboardTests(unittest.TestCase):
         csrf = _csrf(response.text)
         refreshed = self.client.post("/collect", data={"csrf_token": csrf}, follow_redirects=True)
         self.assertIn("Snapshot 1 collected", refreshed.text)
-        self.assertIn("Capacity decision", refreshed.text)
-        self.assertIn("Planning-safe CPU", refreshed.text)
+        self.assertNotIn("Current capacity decision", refreshed.text)
+        self.assertIn("Safe capacity", refreshed.text)
 
         nodes = self.client.get("/nodes")
         self.assertIn("worker-a", nodes.text)
@@ -134,7 +135,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("HorizontalPodAutoscaler controls Scale.", document.text)
         self.assertNotIn("graph BT hpa", document.text)
 
-    def test_overview_explains_management_capacity_and_cluster_status(self) -> None:
+    def test_dashboard_explains_management_capacity_and_cluster_status(self) -> None:
         login = self.client.get("/login")
         self.client.post(
             "/login",
@@ -145,34 +146,41 @@ class DashboardTests(unittest.TestCase):
 
         overview = self.client.get("/")
         collected = self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
-        self.assertIn("Capacity decision", collected.text)
-        self.assertIn("Ready", collected.text)
-        self.assertIn("Planning-safe CPU", collected.text)
+        self.assertIn("Dashboard", collected.text)
+        self.assertNotIn("Current capacity decision", collected.text)
+        self.assertNotIn("Capacity Available", collected.text)
+        self.assertIn("Safe capacity", collected.text)
         self.assertIn('class="overview-dashboard"', collected.text)
         self.assertIn("Node Allocatable", collected.text)
         self.assertIn("Total node capacity", collected.text)
         self.assertIn("Not allocatable to Pods", collected.text)
         self.assertIn('class="capacity-chart-panel"', collected.text)
-        self.assertIn("Capacity composition", collected.text)
+        self.assertIn("From total resources to safe capacity", collected.text)
         self.assertIn("Scheduled requests", collected.text)
         self.assertIn("Held or unavailable", collected.text)
-        self.assertIn("Safe for deployment", collected.text)
+        self.assertIn("Safe capacity", collected.text)
         self.assertIn('aria-label="CPU capacity composition"', collected.text)
         self.assertIn('aria-label="Memory capacity composition"', collected.text)
         self.assertIn("2,500m", collected.text)
         self.assertIn("3,221,225,472 B", collected.text)
-        self.assertIn("2,000m", collected.text)
-        self.assertIn("2,147,483,648 B", collected.text)
-        self.assertIn("Usage available", collected.text)
-        self.assertIn("Observed CPU", collected.text)
+        self.assertIn('href="/docs/node-allocatable"', collected.text)
+        self.assertNotIn("30-day request trend", collected.text)
+        self.assertNotIn("Full resource figures", collected.text)
+        self.assertNotIn("Observed usage", collected.text)
         self.assertIn("KCP planning reserve", collected.text)
-        self.assertIn("Reserve Compute Resources for System Daemons", collected.text)
+        self.assertNotIn("Snapshot quality", collected.text)
 
         clusters = self.client.get("/clusters")
-        self.assertIn("Management capacity", clusters.text)
-        self.assertIn("Ready", clusters.text)
+        self.assertIn("Management decision", clusters.text)
+        self.assertIn("Capacity Available", clusters.text)
+        self.assertIn("Trend unavailable", clusters.text)
 
-    def test_overview_does_not_load_report_history_for_capacity_status(self) -> None:
+        reports = self.client.get("/reports")
+        self.assertEqual(reports.status_code, 200)
+        self.assertIn("Reports", reports.text)
+        self.assertIn("30-day trend evidence", reports.text)
+
+    def test_dashboard_does_not_load_report_history_for_capacity_flow(self) -> None:
         login = self.client.get("/login")
         self.client.post(
             "/login",
@@ -250,7 +258,7 @@ class DashboardTests(unittest.TestCase):
             data={"username": "admin", "password": "a newer correct password", "csrf_token": _csrf(new_login.text)},
             follow_redirects=True,
         )
-        self.assertIn("Overview", new_password.text)
+        self.assertIn("Dashboard", new_password.text)
 
     def test_account_page_rejects_mismatched_passwords_and_invalid_csrf(self) -> None:
         login = self.client.get("/login")
@@ -807,7 +815,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("payments/Deployment/api", allocation.text)
         self.assertIn("Resource Management for Pods and Containers", allocation.text)
 
-    def test_allocation_evaluates_a_new_deployment_fit_without_persisting_it(self) -> None:
+    def test_dashboard_shows_facts_without_deployment_approval(self) -> None:
         login = self.client.get("/login")
         self.client.post(
             "/login",
@@ -818,36 +826,29 @@ class DashboardTests(unittest.TestCase):
         overview = self.client.get("/")
         self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
 
-        allocation = self.client.get("/allocation")
-        fit = self.client.post(
-            "/allocation",
-            data={
-                "csrf_token": _csrf(allocation.text),
-                "replicas": "2",
-                "cpu_request": "300m",
-                "memory_request": "256Mi",
-                "namespace": "payments",
-            },
-        )
-
-        self.assertEqual(fit.status_code, 200)
-        self.assertIn("New deployment fit", fit.text)
-        self.assertIn("Fits", fit.text)
-        self.assertIn("Maximum safe replicas", fit.text)
-        self.assertIn("Resource-only estimate", fit.text)
+        dashboard = self.client.get("/")
+        self.assertIn("From total resources to safe capacity", dashboard.text)
+        self.assertIn("Safe capacity", dashboard.text)
+        self.assertNotIn("Next action", dashboard.text)
+        self.assertNotIn("Management follow-up", dashboard.text)
+        self.assertNotIn("Items that need attention", dashboard.text)
+        self.assertNotIn("Recommended action", dashboard.text)
+        self.assertNotIn("Current capacity decision", dashboard.text)
+        self.assertNotIn("Deployment approval", dashboard.text)
+        self.assertNotIn("Can this deployment be approved?", dashboard.text)
+        self.assertNotIn("Resource-only planning estimate", dashboard.text)
+        self.assertNotIn("30-day request trend", dashboard.text)
+        self.assertNotIn("Full resource figures", dashboard.text)
+        self.assertNotIn("Observed usage", dashboard.text)
+        self.assertIn("KCP planning reserve", dashboard.text)
+        self.assertNotIn("Snapshot quality", dashboard.text)
         self.assertEqual(len(self.store.list_snapshots()), 1)
 
-        invalid = self.client.post(
-            "/allocation",
-            data={
-                "csrf_token": _csrf(fit.text),
-                "replicas": "0",
-                "cpu_request": "300m",
-                "memory_request": "256Mi",
-                "namespace": "",
-            },
-        )
-        self.assertIn("replicas must be at least 1", invalid.text)
+        self.assertEqual(self.client.post("/").status_code, 405)
+
+        allocation = self.client.get("/allocation")
+        self.assertIn("Request-based scheduling capacity", allocation.text)
+        self.assertNotIn("Can this deployment be approved?", allocation.text)
 
     def test_stale_reports_show_data_quality_and_export_capacity_provenance(self) -> None:
         login = self.client.get("/login")
@@ -862,15 +863,55 @@ class DashboardTests(unittest.TestCase):
         self.store.save_snapshot(datetime.now(UTC) - timedelta(hours=3), "v1.36.0", payload, cluster_id=cluster["id"])
 
         overview = self.client.get("/")
-        self.assertIn("Report stale", overview.text)
-        self.assertIn("Collection limitations", overview.text)
-        self.assertIn("Metrics API unavailable", overview.text)
+        self.assertIn("Capacity flow", overview.text)
+        self.assertIn("Take a new snapshot to collect Node Capacity", overview.text)
+        self.assertNotIn("Report stale", overview.text)
+        self.assertNotIn("Collection limitations", overview.text)
+        self.assertNotIn("Metrics API unavailable", overview.text)
 
         export_json = self.client.get("/exports/latest.json")
         export_markdown = self.client.get("/exports/latest.md")
         self.assertIn('"management_capacity"', export_json.text)
         self.assertIn("Planning-safe capacity", export_markdown.text)
         self.assertIn("/docs/node-allocatable", export_markdown.text)
+
+    def test_reports_exports_and_legacy_history_share_management_evidence(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        overview = self.client.get("/")
+        self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+
+        reports = self.client.get("/reports")
+        history = self.client.get("/history")
+        export_json = self.client.get("/exports/latest.json")
+        export_markdown = self.client.get("/exports/latest.md")
+        export_html = self.client.get("/exports/latest.html")
+        settings = self.client.get("/settings")
+        allocation = self.client.get("/allocation")
+
+        self.assertEqual(reports.status_code, 200)
+        self.assertEqual(history.status_code, 200)
+        self.assertIn("Stored capacity reports", reports.text)
+        self.assertIn("Stored capacity reports", history.text)
+        self.assertIn("Request-based scheduling capacity", allocation.text)
+        self.assertNotIn("Can this deployment be approved?", allocation.text)
+        self.assertIn("KCP planning policy", settings.text)
+
+        management = json.loads(export_json.text)["management_capacity"]
+        self.assertEqual(management["decision"]["state"], "Capacity Available")
+        self.assertEqual(management["capacity_flow"]["total_node_capacity"]["cpu_millicores"], 2_500)
+        self.assertEqual(management["capacity_flow"]["scheduled_requests"]["cpu_millicores"], 500)
+        self.assertEqual(management["source"]["document_id"], "node-allocatable")
+        self.assertIn("KCP planning policy", export_markdown.text)
+        self.assertIn("Management decision: Capacity Available", export_markdown.text)
+        self.assertIn("Total Node Capacity", export_markdown.text)
+        self.assertIn("/docs/node-allocatable", export_markdown.text)
+        self.assertIn("Management decision: Capacity Available", export_html.text)
 
 
 def _csrf(text: str) -> str:

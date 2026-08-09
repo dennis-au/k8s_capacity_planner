@@ -24,7 +24,8 @@ class DeploymentFitTests(unittest.TestCase):
             self.docs,
         )
 
-        self.assertEqual(fit.status, "Fits")
+        self.assertEqual(fit.status, "Approved")
+        self.assertTrue(fit.approved)
         self.assertTrue(fit.fits)
         self.assertEqual(fit.maximum_safe_replicas, 2)
         self.assertEqual(fit.issues, [])
@@ -40,9 +41,11 @@ class DeploymentFitTests(unittest.TestCase):
             self.docs,
         )
 
-        self.assertEqual(fit.status, "Blocked")
+        self.assertEqual(fit.status, "Not approved")
+        self.assertFalse(fit.approved)
         self.assertFalse(fit.fits)
-        self.assertIn("only 2", fit.summary)
+        self.assertTrue(fit.capacity_blocked)
+        self.assertIn("only 2", fit.issues[0].message)
         self.assertEqual(fit.issues[0].source["document_id"], "node-allocatable")
 
     def test_namespace_quota_and_pod_limit_range_can_block_fit(self) -> None:
@@ -80,12 +83,14 @@ class DeploymentFitTests(unittest.TestCase):
             self.docs,
         )
 
-        self.assertEqual(quota_fit.status, "Blocked")
-        self.assertIn("ResourceQuota", quota_fit.summary)
-        self.assertEqual(quota_fit.issues[0].source["document_id"], "resource-quota")
-        self.assertEqual(limit_range_fit.status, "Blocked")
-        self.assertIn("LimitRange", limit_range_fit.summary)
-        self.assertEqual(limit_range_fit.issues[0].source["document_id"], "limit-range")
+        self.assertEqual(quota_fit.status, "Not approved")
+        self.assertTrue(quota_fit.policy_blocked)
+        self.assertTrue(any("ResourceQuota" in issue.message for issue in quota_fit.issues))
+        self.assertTrue(any(issue.source["document_id"] == "resource-quota" for issue in quota_fit.issues))
+        self.assertEqual(limit_range_fit.status, "Not approved")
+        self.assertTrue(limit_range_fit.policy_blocked)
+        self.assertTrue(any("LimitRange" in issue.message for issue in limit_range_fit.issues))
+        self.assertTrue(any(issue.source["document_id"] == "limit-range" for issue in limit_range_fit.issues))
 
     def test_namespace_is_optional_and_container_policy_requires_review(self) -> None:
         snapshot = _snapshot(
@@ -117,9 +122,11 @@ class DeploymentFitTests(unittest.TestCase):
             self.docs,
         )
 
-        self.assertEqual(no_namespace.status, "Fits")
-        self.assertEqual(namespace_selected.status, "Constrained")
-        self.assertIn("Container LimitRange", namespace_selected.summary)
+        self.assertEqual(no_namespace.status, "Approved")
+        self.assertEqual(namespace_selected.status, "Approved")
+        self.assertTrue(namespace_selected.approved)
+        self.assertFalse(namespace_selected.policy_blocked)
+        self.assertTrue(any("Container LimitRange" in issue.message for issue in namespace_selected.issues))
 
 
 def _snapshot(
