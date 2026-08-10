@@ -11,7 +11,7 @@ WORKDIR /app
 
 RUN case "$TARGETARCH" in amd64|arm64) ;; *) echo "Unsupported kubectl architecture: $TARGETARCH" >&2; exit 1 ;; esac \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl iputils-ping \
     && curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
         --output /tmp/kubectl \
