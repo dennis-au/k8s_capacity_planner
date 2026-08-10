@@ -32,7 +32,10 @@ class _Collector:
                     limits=ResourceValues(cpu_millicores=1000, memory_bytes=1024 * 1024**2),
                 )
             ],
-            namespaces=[NamespaceSummary(name="payments", has_limit_range=True)],
+            namespaces=[
+                NamespaceSummary(name="payments", has_limit_range=True),
+                NamespaceSummary(name="logging", has_limit_range=False),
+            ],
             workloads=[
                 WorkloadSummary(
                     namespace="payments",
@@ -45,7 +48,27 @@ class _Collector:
                     qos="Burstable",
                     missing_requests=False,
                     has_hpa=True,
-                )
+                    desired_replicas=2,
+                    deployment_strategy="RollingUpdate",
+                    rolling_update_max_surge="50%",
+                    template_requests=ResourceValues(cpu_millicores=250, memory_bytes=256 * 1024**2),
+                ),
+                WorkloadSummary(
+                    namespace="logging",
+                    kind="Deployment",
+                    name="collector",
+                    replicas=1,
+                    requests=ResourceValues(cpu_millicores=100, memory_bytes=64 * 1024**2),
+                    limits=ResourceValues(cpu_millicores=200, memory_bytes=128 * 1024**2),
+                    usage=ResourceValues(cpu_millicores=50, memory_bytes=32 * 1024**2),
+                    qos="Burstable",
+                    missing_requests=False,
+                    has_hpa=False,
+                    desired_replicas=1,
+                    deployment_strategy="RollingUpdate",
+                    rolling_update_max_surge="25%",
+                    template_requests=ResourceValues(cpu_millicores=100, memory_bytes=64 * 1024**2),
+                ),
             ],
         )
 
@@ -90,7 +113,7 @@ class DashboardTests(unittest.TestCase):
         refreshed = self.client.post("/collect", data={"csrf_token": csrf}, follow_redirects=True)
         self.assertIn("Snapshot 1 collected", refreshed.text)
         self.assertNotIn("Current capacity decision", refreshed.text)
-        self.assertIn("Safe capacity", refreshed.text)
+        self.assertIn("Raw remaining", refreshed.text)
 
         nodes = self.client.get("/nodes")
         self.assertIn("worker-a", nodes.text)
@@ -149,25 +172,31 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Dashboard", collected.text)
         self.assertNotIn("Current capacity decision", collected.text)
         self.assertNotIn("Capacity Available", collected.text)
-        self.assertIn("Safe capacity", collected.text)
+        self.assertIn("Raw remaining", collected.text)
         self.assertIn('class="overview-dashboard"', collected.text)
         self.assertIn("Node Allocatable", collected.text)
         self.assertIn("Total node capacity", collected.text)
         self.assertIn("Not allocatable to Pods", collected.text)
         self.assertIn('class="capacity-chart-panel"', collected.text)
-        self.assertIn("From total resources to safe capacity", collected.text)
+        self.assertIn("From total resources to raw remaining capacity", collected.text)
         self.assertIn("Scheduled requests", collected.text)
-        self.assertIn("Held or unavailable", collected.text)
-        self.assertIn("Safe capacity", collected.text)
+        self.assertIn("Raw remaining", collected.text)
         self.assertIn('aria-label="CPU capacity composition"', collected.text)
         self.assertIn('aria-label="Memory capacity composition"', collected.text)
         self.assertIn("2,500m", collected.text)
         self.assertIn("3,221,225,472 B", collected.text)
         self.assertIn('href="/docs/node-allocatable"', collected.text)
+        self.assertIn("One Deployment rollout per namespace", collected.text)
+        self.assertIn("Sufficient", collected.text)
+        self.assertIn("Additional CPU request", collected.text)
+        self.assertIn("CPU after rollouts", collected.text)
+        self.assertIn("payments", collected.text)
+        self.assertIn("logging", collected.text)
+        self.assertIn("Conservative envelope", collected.text)
         self.assertNotIn("30-day request trend", collected.text)
         self.assertNotIn("Full resource figures", collected.text)
         self.assertNotIn("Observed usage", collected.text)
-        self.assertIn("KCP planning reserve", collected.text)
+        self.assertNotIn("KCP planning reserve", collected.text)
         self.assertNotIn("Snapshot quality", collected.text)
 
         clusters = self.client.get("/clusters")
@@ -827,8 +856,8 @@ class DashboardTests(unittest.TestCase):
         self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
 
         dashboard = self.client.get("/")
-        self.assertIn("From total resources to safe capacity", dashboard.text)
-        self.assertIn("Safe capacity", dashboard.text)
+        self.assertIn("From total resources to raw remaining capacity", dashboard.text)
+        self.assertIn("Raw remaining", dashboard.text)
         self.assertNotIn("Next action", dashboard.text)
         self.assertNotIn("Management follow-up", dashboard.text)
         self.assertNotIn("Items that need attention", dashboard.text)
@@ -840,7 +869,7 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("30-day request trend", dashboard.text)
         self.assertNotIn("Full resource figures", dashboard.text)
         self.assertNotIn("Observed usage", dashboard.text)
-        self.assertIn("KCP planning reserve", dashboard.text)
+        self.assertNotIn("KCP planning reserve", dashboard.text)
         self.assertNotIn("Snapshot quality", dashboard.text)
         self.assertEqual(len(self.store.list_snapshots()), 1)
 
@@ -900,14 +929,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Stored capacity reports", history.text)
         self.assertIn("Request-based scheduling capacity", allocation.text)
         self.assertNotIn("Can this deployment be approved?", allocation.text)
-        self.assertIn("KCP planning policy", settings.text)
+        self.assertIn("Capacity Planner policy", settings.text)
 
         management = json.loads(export_json.text)["management_capacity"]
         self.assertEqual(management["decision"]["state"], "Capacity Available")
         self.assertEqual(management["capacity_flow"]["total_node_capacity"]["cpu_millicores"], 2_500)
         self.assertEqual(management["capacity_flow"]["scheduled_requests"]["cpu_millicores"], 500)
         self.assertEqual(management["source"]["document_id"], "node-allocatable")
-        self.assertIn("KCP planning policy", export_markdown.text)
+        self.assertIn("Capacity Planner policy", export_markdown.text)
         self.assertIn("Management decision: Capacity Available", export_markdown.text)
         self.assertIn("Total Node Capacity", export_markdown.text)
         self.assertIn("/docs/node-allocatable", export_markdown.text)

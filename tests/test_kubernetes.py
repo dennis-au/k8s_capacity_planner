@@ -162,6 +162,7 @@ class KubernetesNormalizationTests(unittest.TestCase):
         collector.core.list_resource_quota_for_all_namespaces.return_value = Mock(items=[])
         collector.core.list_limit_range_for_all_namespaces.return_value = Mock(items=[])
         collector.core.list_event_for_all_namespaces.return_value = Mock(items=[])
+        collector.apps.list_deployment_for_all_namespaces.return_value = Mock(items=[])
         collector.apps.list_replica_set_for_all_namespaces.return_value = Mock(items=[])
         collector.autoscaling.list_horizontal_pod_autoscaler_for_all_namespaces.return_value = Mock(items=[])
         collector.custom.list_cluster_custom_object.return_value = {"items": []}
@@ -173,6 +174,62 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(snapshot.nodes[0].allocatable.cpu_millicores, 2000)
         for api in (collector.core, collector.apps, collector.autoscaling, collector.custom):
             self.assertTrue(all(call[0].startswith("list_") for call in api.method_calls))
+
+    def test_collection_records_deployment_rolling_update_requests_without_active_pods(self) -> None:
+        collector = KubernetesCollector.__new__(KubernetesCollector)
+        collector.version = Mock()
+        collector.version.get_code.return_value = Mock(git_version="v1.36.1")
+        collector.core = Mock()
+        collector.apps = Mock()
+        collector.autoscaling = Mock()
+        collector.custom = Mock()
+        deployment = client.V1Deployment(
+            metadata=client.V1ObjectMeta(name="api", namespace="payments"),
+            spec=client.V1DeploymentSpec(
+                replicas=4,
+                selector=client.V1LabelSelector(match_labels={"app": "api"}),
+                strategy=client.V1DeploymentStrategy(
+                    type="RollingUpdate",
+                    rolling_update=client.V1RollingUpdateDeployment(max_surge="50%"),
+                ),
+                template=client.V1PodTemplateSpec(
+                    spec=client.V1PodSpec(
+                        containers=[
+                            client.V1Container(
+                                name="api",
+                                image="example",
+                                resources=client.V1ResourceRequirements(
+                                    requests={"cpu": "250m", "memory": "128Mi"}
+                                ),
+                            )
+                        ]
+                    )
+                ),
+            ),
+        )
+        collector.core.list_node.return_value = Mock(items=[])
+        collector.core.list_namespace.return_value = Mock(items=[])
+        collector.core.list_pod_for_all_namespaces.return_value = Mock(items=[])
+        collector.core.list_resource_quota_for_all_namespaces.return_value = Mock(items=[])
+        collector.core.list_limit_range_for_all_namespaces.return_value = Mock(items=[])
+        collector.core.list_event_for_all_namespaces.return_value = Mock(items=[])
+        collector.apps.list_deployment_for_all_namespaces.return_value = Mock(items=[deployment])
+        collector.apps.list_replica_set_for_all_namespaces.return_value = Mock(items=[])
+        collector.autoscaling.list_horizontal_pod_autoscaler_for_all_namespaces.return_value = Mock(items=[])
+        collector.custom.list_cluster_custom_object.return_value = {"items": []}
+
+        snapshot = collector.collect()
+
+        self.assertEqual(len(snapshot.workloads), 1)
+        workload = snapshot.workloads[0]
+        self.assertEqual(workload.identity, "payments/Deployment/api")
+        self.assertEqual(workload.desired_replicas, 4)
+        self.assertEqual(workload.deployment_strategy, "RollingUpdate")
+        self.assertEqual(workload.rolling_update_max_surge, "50%")
+        self.assertEqual(workload.template_requests.cpu_millicores, 250)
+        self.assertEqual(workload.template_requests.memory_bytes, 128 * 1024**2)
+        self.assertFalse(workload.template_missing_requests)
+        collector.apps.list_deployment_for_all_namespaces.assert_called_once_with(_request_timeout=20)
 
     def test_node_ready_distinguishes_ready_from_not_ready_conditions(self) -> None:
         ready = client.V1Node(

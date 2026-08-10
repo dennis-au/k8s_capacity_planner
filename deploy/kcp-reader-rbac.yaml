@@ -13,7 +13,7 @@ rules:
     resources: ["nodes", "namespaces", "pods", "resourcequotas", "limitranges", "events"]
     verbs: ["get", "list"]
   - apiGroups: ["apps"]
-    resources: ["replicasets"]
+    resources: ["deployments", "replicasets"]
     verbs: ["get", "list"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]

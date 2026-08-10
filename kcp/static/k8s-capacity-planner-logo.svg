@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">K8S Capacity Planner</title>
+  <desc id="desc">A Kubernetes capacity planning mark with three resource bars.</desc>
+  <rect width="96" height="96" rx="20" fill="#2f80ed"/>
+  <path d="M24 28h48v40H24z" fill="#fff" opacity=".16"/>
+  <path d="M28 34h40M28 48h40M28 62h40M38 30v36M58 30v36" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".7"/>
+  <rect x="28" y="56" width="10" height="10" rx="2" fill="#fff"/>
+  <rect x="43" y="44" width="10" height="22" rx="2" fill="#fff"/>
+  <rect x="58" y="36" width="10" height="30" rx="2" fill="#fff"/>
+</svg>

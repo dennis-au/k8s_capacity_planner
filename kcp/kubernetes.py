@@ -64,6 +64,7 @@ class KubernetesCollector:
         quotas = self.core.list_resource_quota_for_all_namespaces(_request_timeout=20).items
         limit_ranges = self.core.list_limit_range_for_all_namespaces(_request_timeout=20).items
         hpas = self.autoscaling.list_horizontal_pod_autoscaler_for_all_namespaces(_request_timeout=20).items
+        deployments = self.apps.list_deployment_for_all_namespaces(_request_timeout=20).items
         replica_sets = self.apps.list_replica_set_for_all_namespaces(_request_timeout=20).items
         events = self.core.list_event_for_all_namespaces(_request_timeout=20).items
 
@@ -79,6 +80,7 @@ class KubernetesCollector:
             warnings.append(f"Metrics API unavailable: {type(exc).__name__}")
 
         replica_set_owners = _replica_set_owners(replica_sets)
+        deployment_rollouts = _deployment_rollouts(deployments)
         hpa_targets = _hpa_targets(hpas)
         pod_events = _pod_events(events)
         active_pods = [pod for pod in pods if _is_active_pod(pod)]
@@ -105,6 +107,9 @@ class KubernetesCollector:
                 events=pod_events.get((namespace, pod_name), []),
             )
 
+        for namespace, name in deployment_rollouts:
+            workloads.setdefault((namespace, "Deployment", name), _WorkloadAccumulator(namespace, "Deployment", name))
+
         node_summaries = [
             NodeSummary(
                 name=node.metadata.name,
@@ -127,7 +132,8 @@ class KubernetesCollector:
         namespace_summaries = _namespace_summaries(namespaces, quotas, limit_ranges)
         workload_summaries = [
             accumulator.to_summary(
-                has_hpa=(accumulator.namespace, accumulator.kind, accumulator.name) in hpa_targets
+                has_hpa=(accumulator.namespace, accumulator.kind, accumulator.name) in hpa_targets,
+                rollout=deployment_rollouts.get((accumulator.namespace, accumulator.name)),
             )
             for accumulator in workloads.values()
         ]
@@ -286,7 +292,7 @@ class _WorkloadAccumulator:
         self.missing_requests = self.missing_requests or missing_requests
         self.events.extend(events)
 
-    def to_summary(self, has_hpa: bool) -> WorkloadSummary:
+    def to_summary(self, has_hpa: bool, rollout: "_DeploymentRollout | None") -> WorkloadSummary:
         qos = "Guaranteed"
         if "BestEffort" in self.qos_values:
             qos = "BestEffort"
@@ -303,8 +309,22 @@ class _WorkloadAccumulator:
             qos=qos,
             missing_requests=self.missing_requests,
             has_hpa=has_hpa,
+            desired_replicas=rollout.desired_replicas if rollout else None,
+            deployment_strategy=rollout.strategy if rollout else None,
+            rolling_update_max_surge=rollout.max_surge if rollout else None,
+            template_requests=rollout.template_requests if rollout else None,
+            template_missing_requests=rollout.template_missing_requests if rollout else False,
             events=sorted(set(self.events)),
         )
+
+
+@dataclass(frozen=True)
+class _DeploymentRollout:
+    desired_replicas: int
+    strategy: str
+    max_surge: int | str | None
+    template_requests: ResourceValues
+    template_missing_requests: bool
 
 
 def pod_resources(pod: client.V1Pod, field: str = "requests") -> ResourceValues:
@@ -382,6 +402,31 @@ def _replica_set_owners(replica_sets: list[client.V1ReplicaSet]) -> dict[tuple[s
         owner = next((reference for reference in references if reference.controller), None)
         if owner:
             result[(replica_set.metadata.namespace or "default", replica_set.metadata.name)] = (owner.kind, owner.name)
+    return result
+
+
+def _deployment_rollouts(deployments: list[client.V1Deployment]) -> dict[tuple[str, str], _DeploymentRollout]:
+    result: dict[tuple[str, str], _DeploymentRollout] = {}
+    for deployment in deployments:
+        spec = deployment.spec
+        if spec is None or spec.template is None:
+            continue
+        namespace = deployment.metadata.namespace or "default"
+        name = deployment.metadata.name
+        strategy = spec.strategy
+        strategy_type = (strategy.type if strategy else None) or "RollingUpdate"
+        rolling_update = strategy.rolling_update if strategy else None
+        max_surge = rolling_update.max_surge if rolling_update else None
+        if strategy_type == "RollingUpdate" and max_surge is None:
+            max_surge = "25%"
+        desired_replicas = spec.replicas if isinstance(spec.replicas, int) else 1
+        result[(namespace, name)] = _DeploymentRollout(
+            desired_replicas=desired_replicas,
+            strategy=strategy_type,
+            max_surge=max_surge,
+            template_requests=pod_resources(spec.template),
+            template_missing_requests=_has_missing_requests(spec.template),
+        )
     return result
 
 

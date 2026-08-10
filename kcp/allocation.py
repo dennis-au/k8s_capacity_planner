@@ -105,6 +105,30 @@ class AllocationRecommendation:
 
 
 @dataclass(frozen=True)
+class NamespaceRollingUpdateCapacity:
+    namespace: str
+    deployment_count: int
+    cpu_peak_deployment: str | None
+    memory_peak_deployment: str | None
+    additional_requests: ResourceValues
+    data_complete: bool
+    data_gaps: list[str]
+
+
+@dataclass(frozen=True)
+class RollingUpdateCapacity:
+    status: str
+    namespace_count: int
+    deployment_count: int
+    additional_requests: ResourceValues
+    raw_remaining: ResourceValues
+    remaining_after: ResourceValues
+    shortfall: ResourceValues
+    namespaces: list[NamespaceRollingUpdateCapacity]
+    data_gaps: list[str]
+
+
+@dataclass(frozen=True)
 class AllocationPlan:
     total_node_capacity: ResourceValues | None
     total_not_allocatable: ResourceValues | None
@@ -121,6 +145,7 @@ class AllocationPlan:
     capacity_status: CapacityStatus
     trend: CapacityTrend
     capacity_source: dict[str, str]
+    rolling_update_capacity: RollingUpdateCapacity
 
 
 def build_allocation_plan(
@@ -157,6 +182,7 @@ def build_allocation_plan(
         _recommend_workload(workload, observed_peaks.get(_workload_identity(workload)), docs)
         for workload in snapshot.get("workloads", [])
     ]
+    rolling_update_capacity = _rolling_update_capacity(snapshot.get("workloads", []), total_remaining)
     return AllocationPlan(
         total_node_capacity=total_node_capacity,
         total_not_allocatable=total_not_allocatable,
@@ -173,6 +199,7 @@ def build_allocation_plan(
         capacity_status=_capacity_status(nodes, total_remaining, total_planning_safe, snapshot.get("metrics_available") is True),
         trend=_capacity_trend([snapshot, *history], planning_reserve_percent),
         capacity_source=docs.source_for_rule("node-headroom"),
+        rolling_update_capacity=rolling_update_capacity,
     )
 
 
@@ -304,6 +331,128 @@ def _planning_safe(remaining: ResourceValues, allocatable: ResourceValues, plann
         ephemeral_storage_bytes=max(
             0, remaining.ephemeral_storage_bytes - reserve(allocatable.ephemeral_storage_bytes)
         ),
+    )
+
+
+def _rolling_update_capacity(workloads: Any, raw_remaining: ResourceValues) -> RollingUpdateCapacity:
+    deployment_counts: dict[str, int] = {}
+    candidates: dict[str, list[tuple[str, ResourceValues]]] = {}
+    namespace_gaps: dict[str, list[str]] = {}
+
+    for workload in workloads if isinstance(workloads, list) else []:
+        if not isinstance(workload, dict) or workload.get("kind") != "Deployment":
+            continue
+        namespace = str(workload.get("namespace", "default"))
+        name = str(workload.get("name", "unknown"))
+        deployment_counts[namespace] = deployment_counts.get(namespace, 0) + 1
+        additional, gap = _rolling_update_additional_requests(workload)
+        if gap:
+            namespace_gaps.setdefault(namespace, []).append(f"{namespace}/{name}: {gap}")
+            continue
+        candidates.setdefault(namespace, []).append((name, additional))
+
+    namespace_results: list[NamespaceRollingUpdateCapacity] = []
+    for namespace in sorted(deployment_counts):
+        namespace_candidates = candidates.get(namespace, [])
+        cpu_peak = max(namespace_candidates, key=lambda item: (item[1].cpu_millicores, item[0]), default=None)
+        memory_peak = max(namespace_candidates, key=lambda item: (item[1].memory_bytes, item[0]), default=None)
+        additional = ResourceValues(
+            cpu_millicores=cpu_peak[1].cpu_millicores if cpu_peak else 0,
+            memory_bytes=memory_peak[1].memory_bytes if memory_peak else 0,
+        )
+        namespace_results.append(
+            NamespaceRollingUpdateCapacity(
+                namespace=namespace,
+                deployment_count=deployment_counts[namespace],
+                cpu_peak_deployment=cpu_peak[0] if cpu_peak else None,
+                memory_peak_deployment=memory_peak[0] if memory_peak else None,
+                additional_requests=additional,
+                data_complete=not namespace_gaps.get(namespace),
+                data_gaps=namespace_gaps.get(namespace, []),
+            )
+        )
+
+    additional_requests = _sum_resources(item.additional_requests for item in namespace_results)
+    shortfall = ResourceValues(
+        cpu_millicores=max(0, additional_requests.cpu_millicores - raw_remaining.cpu_millicores),
+        memory_bytes=max(0, additional_requests.memory_bytes - raw_remaining.memory_bytes),
+    )
+    remaining_after = ResourceValues(
+        cpu_millicores=max(0, raw_remaining.cpu_millicores - additional_requests.cpu_millicores),
+        memory_bytes=max(0, raw_remaining.memory_bytes - additional_requests.memory_bytes),
+    )
+    data_gaps = [gap for namespace in namespace_results for gap in namespace.data_gaps]
+    status = (
+        "No deployments"
+        if not namespace_results
+        else "Insufficient"
+        if shortfall.cpu_millicores or shortfall.memory_bytes
+        else "Incomplete"
+        if data_gaps
+        else "Sufficient"
+    )
+    return RollingUpdateCapacity(
+        status=status,
+        namespace_count=len(namespace_results),
+        deployment_count=sum(deployment_counts.values()),
+        additional_requests=additional_requests,
+        raw_remaining=raw_remaining,
+        remaining_after=remaining_after,
+        shortfall=shortfall,
+        namespaces=namespace_results,
+        data_gaps=data_gaps,
+    )
+
+
+def _rolling_update_additional_requests(workload: dict[str, Any]) -> tuple[ResourceValues, str | None]:
+    strategy = workload.get("deployment_strategy")
+    if not isinstance(strategy, str) or not strategy:
+        return ResourceValues(), "Deployment rollout strategy was not recorded in this snapshot."
+    if strategy != "RollingUpdate":
+        return ResourceValues(), None
+
+    desired_replicas = workload.get("desired_replicas")
+    if isinstance(desired_replicas, bool) or not isinstance(desired_replicas, int) or desired_replicas < 0:
+        return ResourceValues(), "Deployment desired replicas were not recorded in this snapshot."
+    if desired_replicas == 0:
+        return ResourceValues(), None
+
+    template_requests = workload.get("template_requests")
+    if not isinstance(template_requests, dict):
+        return ResourceValues(), "Pod template requests were not recorded in this snapshot."
+    if workload.get("template_missing_requests") is True:
+        return ResourceValues(), "Pod template does not declare both CPU and memory requests."
+
+    surge_pods = _max_surge_pods(workload.get("rolling_update_max_surge"), desired_replicas)
+    if surge_pods is None:
+        return ResourceValues(), "Deployment maxSurge is invalid or was not recorded."
+    requests = _resources(template_requests)
+    return _multiply_resources(requests, surge_pods), None
+
+
+def _max_surge_pods(value: Any, desired_replicas: int) -> int | None:
+    if value is None:
+        return math.ceil(desired_replicas * 0.25)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if normalized.endswith("%"):
+        percentage = normalized[:-1]
+        if not percentage.isdigit():
+            return None
+        return math.ceil(desired_replicas * int(percentage) / 100)
+    return int(normalized) if normalized.isdigit() else None
+
+
+def _multiply_resources(resources: ResourceValues, count: int) -> ResourceValues:
+    return ResourceValues(
+        cpu_millicores=resources.cpu_millicores * count,
+        memory_bytes=resources.memory_bytes * count,
+        ephemeral_storage_bytes=resources.ephemeral_storage_bytes * count,
     )
 
 

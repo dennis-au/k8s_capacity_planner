@@ -389,6 +389,161 @@ class AllocationPlanTests(unittest.TestCase):
         self.assertTrue(fit.review_required)
         self.assertFalse(fit.policy_blocked)
 
+    def test_rolling_update_capacity_uses_one_conservative_envelope_per_namespace(self) -> None:
+        snapshot = {
+            "nodes": [
+                {
+                    "name": "worker-a",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 750, "memory_bytes": 700},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                }
+            ],
+            "workloads": [
+                {
+                    "namespace": "payments",
+                    "kind": "Deployment",
+                    "name": "api",
+                    "desired_replicas": 4,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": "25%",
+                    "template_requests": {"cpu_millicores": 100, "memory_bytes": 50},
+                    "template_missing_requests": False,
+                },
+                {
+                    "namespace": "payments",
+                    "kind": "Deployment",
+                    "name": "reports",
+                    "desired_replicas": 2,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": "1",
+                    "template_requests": {"cpu_millicores": 80, "memory_bytes": 150},
+                    "template_missing_requests": False,
+                },
+                {
+                    "namespace": "checkout",
+                    "kind": "Deployment",
+                    "name": "web",
+                    "desired_replicas": 1,
+                    "deployment_strategy": "RollingUpdate",
+                    "template_requests": {"cpu_millicores": 100, "memory_bytes": 100},
+                    "template_missing_requests": False,
+                },
+            ],
+        }
+
+        plan = build_allocation_plan(snapshot, [], self.docs)
+        rollout = plan.rolling_update_capacity
+
+        self.assertEqual(rollout.status, "Sufficient")
+        self.assertEqual(rollout.namespace_count, 2)
+        self.assertEqual(rollout.deployment_count, 3)
+        self.assertEqual(rollout.additional_requests.cpu_millicores, 200)
+        self.assertEqual(rollout.additional_requests.memory_bytes, 250)
+        self.assertEqual(rollout.remaining_after.cpu_millicores, 50)
+        self.assertEqual(rollout.remaining_after.memory_bytes, 50)
+        payments = next(item for item in rollout.namespaces if item.namespace == "payments")
+        self.assertEqual(payments.cpu_peak_deployment, "api")
+        self.assertEqual(payments.memory_peak_deployment, "reports")
+        self.assertEqual(payments.additional_requests.cpu_millicores, 100)
+        self.assertEqual(payments.additional_requests.memory_bytes, 150)
+
+    def test_rolling_update_capacity_reports_resource_shortfall(self) -> None:
+        snapshot = {
+            "nodes": [
+                {
+                    "name": "worker-a",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 300, "memory_bytes": 500},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                }
+            ],
+            "workloads": [
+                {
+                    "namespace": "payments",
+                    "kind": "Deployment",
+                    "name": "api",
+                    "desired_replicas": 3,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": 2,
+                    "template_requests": {"cpu_millicores": 300, "memory_bytes": 300},
+                    "template_missing_requests": False,
+                },
+                {
+                    "namespace": "logging",
+                    "kind": "Deployment",
+                    "name": "collector",
+                    "desired_replicas": 1,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": 1,
+                    "template_requests": {"cpu_millicores": 100, "memory_bytes": 100},
+                    "template_missing_requests": False,
+                },
+            ],
+        }
+
+        plan = build_allocation_plan(snapshot, [], self.docs)
+        rollout = plan.rolling_update_capacity
+
+        self.assertEqual(rollout.status, "Insufficient")
+        self.assertEqual(rollout.additional_requests.cpu_millicores, 700)
+        self.assertEqual(rollout.additional_requests.memory_bytes, 700)
+        self.assertEqual(rollout.shortfall.cpu_millicores, 0)
+        self.assertEqual(rollout.shortfall.memory_bytes, 200)
+
+    def test_rolling_update_capacity_marks_missing_rollout_data_incomplete(self) -> None:
+        snapshot = {
+            "nodes": [
+                {
+                    "name": "worker-a",
+                    "allocatable": {"cpu_millicores": 1_000, "memory_bytes": 1_000},
+                    "requested": {"cpu_millicores": 100, "memory_bytes": 100},
+                    "conditions": [],
+                    "ready": True,
+                    "schedulable": True,
+                }
+            ],
+            "workloads": [
+                {
+                    "namespace": "payments",
+                    "kind": "Deployment",
+                    "name": "api",
+                    "desired_replicas": 2,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": "50%",
+                    "template_requests": {"cpu_millicores": 100, "memory_bytes": 100},
+                    "template_missing_requests": False,
+                },
+                {
+                    "namespace": "legacy",
+                    "kind": "Deployment",
+                    "name": "worker",
+                    "requests": {"cpu_millicores": 100, "memory_bytes": 100},
+                },
+                {
+                    "namespace": "no-requests",
+                    "kind": "Deployment",
+                    "name": "batch",
+                    "desired_replicas": 1,
+                    "deployment_strategy": "RollingUpdate",
+                    "rolling_update_max_surge": 1,
+                    "template_requests": {"cpu_millicores": 0, "memory_bytes": 0},
+                    "template_missing_requests": True,
+                },
+            ],
+        }
+
+        plan = build_allocation_plan(snapshot, [], self.docs)
+        rollout = plan.rolling_update_capacity
+
+        self.assertEqual(rollout.status, "Incomplete")
+        self.assertEqual(rollout.additional_requests, ResourceValues(cpu_millicores=100, memory_bytes=100))
+        self.assertEqual(len(rollout.data_gaps), 2)
+
 
 def _snapshot_at(
     collected_at: datetime,

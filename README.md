@@ -1,12 +1,13 @@
-# Kubernetes Capacity Planner
+# K8S Capacity Planner
 
-KCP is a dark-site Kubernetes capacity dashboard. It runs outside the target cluster, lets an authenticated administrator add mounted kubeconfig files, stores reports in local SQLite, and bundles Kubernetes v1.36 guidance into the application image.
+K8S Capacity Planner is a dark-site Kubernetes capacity dashboard. It runs outside the target cluster, lets an authenticated administrator add mounted kubeconfig files, stores reports in local SQLite, and bundles Kubernetes v1.36 guidance into the application image.
 
 At runtime KCP does not fetch public documentation, load CDN assets, send telemetry, or make browser-side API calls. Its only network destination is the configured in-site Kubernetes API endpoint.
 
 ## Included Analysis
 
-- Capacity flow of total Node Capacity, Node Allocatable, scheduled requests, planning reserve, and planning-safe headroom.
+- Capacity flow of total Node Capacity, Node Allocatable, scheduled requests, and raw remaining capacity.
+- Concurrent rolling-update capacity from Deployment template requests and configured `maxSurge`, using one conservative rollout envelope per namespace.
 - Node allocatable capacity versus requested resources.
 - Container CPU/memory requests, limits, QoS, and near-limit usage when Metrics API is available.
 - Node pressure, ResourceQuota pressure, LimitRange coverage, HPA presence, and warning events.
@@ -26,7 +27,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.6 .
+docker build -t kcp:0.1.7 .
 ```
 
 ## Cluster Access
@@ -42,16 +43,16 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.6` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.7` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.6-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.6-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.7-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.7-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.6-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.6-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.7-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.7-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
@@ -78,7 +79,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.6
+  kcp:0.1.7
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -89,7 +90,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.6 \
+  --entrypoint python kcp:0.1.7 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 

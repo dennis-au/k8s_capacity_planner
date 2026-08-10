@@ -108,6 +108,11 @@ class WorkloadSummary:
     qos: str
     missing_requests: bool
     has_hpa: bool
+    desired_replicas: int | None = None
+    deployment_strategy: str | None = None
+    rolling_update_max_surge: int | str | None = None
+    template_requests: ResourceValues | None = None
+    template_missing_requests: bool = False
     events: list[str] = field(default_factory=list)
 
     @property
