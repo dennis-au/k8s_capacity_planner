@@ -146,16 +146,18 @@ def _parse_cpu(value: Any) -> int:
 
 def _parse_bytes(value: Any) -> int:
     number, suffix = _parse_quantity(value)
-    if suffix in {"n", "u", "m"}:
-        multiplier = {"n": Decimal("0.000000001"), "u": Decimal("0.000001"), "m": Decimal("0.001")}[suffix]
-    elif suffix in _BINARY_UNITS:
-        multiplier = Decimal(_BINARY_UNITS[suffix])
-    elif suffix in _DECIMAL_UNITS:
-        multiplier = Decimal(_DECIMAL_UNITS[suffix])
-    elif suffix is None:
-        multiplier = Decimal(1)
-    else:
+    multiplier = _quantity_multiplier(suffix)
+    if multiplier is None:
         raise ValueError(f"invalid byte quantity: {value}")
+    return math.ceil(number * multiplier)
+
+
+def quantity_to_int(value: Any) -> int:
+    """Return the numeric value of a Kubernetes Quantity as an integer."""
+    number, suffix = _parse_quantity(value)
+    multiplier = _quantity_multiplier(suffix)
+    if multiplier is None:
+        raise ValueError(f"unsupported resource quantity: {value}")
     return math.ceil(number * multiplier)
 
 
@@ -166,6 +168,16 @@ def _parse_quantity(value: Any) -> tuple[Decimal, str | None]:
     if not match:
         raise ValueError(f"unsupported resource quantity: {value}")
     return Decimal(match.group(1)), match.group(2)
+
+
+def _quantity_multiplier(suffix: str | None) -> Decimal | None:
+    if suffix in {"n", "u", "m"}:
+        return {"n": Decimal("0.000000001"), "u": Decimal("0.000001"), "m": Decimal("0.001")}[suffix]
+    if suffix in _BINARY_UNITS:
+        return Decimal(_BINARY_UNITS[suffix])
+    if suffix in _DECIMAL_UNITS:
+        return Decimal(_DECIMAL_UNITS[suffix])
+    return Decimal(1) if suffix is None else None
 
 
 def _ratio(value: int, total: int) -> float:

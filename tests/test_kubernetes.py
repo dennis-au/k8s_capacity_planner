@@ -161,9 +161,14 @@ class KubernetesNormalizationTests(unittest.TestCase):
             ),
         )
         collector.core.list_node.return_value = Mock(items=[node])
-        collector.core.list_namespace.return_value = Mock(items=[])
+        namespace = client.V1Namespace(metadata=client.V1ObjectMeta(name="payments"))
+        quota = client.V1ResourceQuota(
+            metadata=client.V1ObjectMeta(name="object-count", namespace="payments"),
+            status=client.V1ResourceQuotaStatus(hard={"pods": "2k"}, used={"pods": "1k"}),
+        )
+        collector.core.list_namespace.return_value = Mock(items=[namespace])
         collector.core.list_pod_for_all_namespaces.return_value = Mock(items=[])
-        collector.core.list_resource_quota_for_all_namespaces.return_value = Mock(items=[])
+        collector.core.list_resource_quota_for_all_namespaces.return_value = Mock(items=[quota])
         collector.core.list_limit_range_for_all_namespaces.return_value = Mock(items=[])
         collector.core.list_event_for_all_namespaces.return_value = Mock(items=[])
         collector.apps.list_deployment_for_all_namespaces.return_value = Mock(items=[])
@@ -176,6 +181,8 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(snapshot.nodes[0].capacity.cpu_millicores, 2500)
         self.assertEqual(snapshot.nodes[0].capacity.memory_bytes, 3 * 1024**3)
         self.assertEqual(snapshot.nodes[0].allocatable.cpu_millicores, 2000)
+        self.assertEqual(snapshot.namespaces[0].quotas["pods"].used, 1000)
+        self.assertEqual(snapshot.namespaces[0].quotas["pods"].hard, 2000)
         for api in (collector.core, collector.apps, collector.autoscaling, collector.custom):
             self.assertTrue(all(call[0].startswith("list_") for call in api.method_calls))
 
@@ -291,7 +298,10 @@ class KubernetesNormalizationTests(unittest.TestCase):
                 ),
                 client.V1ResourceQuota(
                     metadata=client.V1ObjectMeta(name="broad", namespace="payments"),
-                    status=client.V1ResourceQuotaStatus(hard={"requests.cpu": "1"}, used={"requests.cpu": "100m"}),
+                    status=client.V1ResourceQuotaStatus(
+                        hard={"requests.cpu": "1", "pods": "2k"},
+                        used={"requests.cpu": "100m", "pods": "1k"},
+                    ),
                 ),
             ],
             [],
@@ -300,6 +310,9 @@ class KubernetesNormalizationTests(unittest.TestCase):
         quota = summaries[0].quotas["requests.cpu"]
         self.assertEqual(quota.used, 90)
         self.assertEqual(quota.hard, 100)
+        pods = summaries[0].quotas["pods"]
+        self.assertEqual(pods.used, 1000)
+        self.assertEqual(pods.hard, 2000)
 
 
 def _write_kubeconfig(root: Path, context: str = "production", user: str = "token: read-only-token", filename: str = "kubeconfig", insecure: bool = False) -> Path:

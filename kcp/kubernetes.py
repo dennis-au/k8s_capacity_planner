@@ -19,6 +19,7 @@ from kcp.models import (
     QuotaUsage,
     ResourceValues,
     WorkloadSummary,
+    quantity_to_int,
 )
 
 
@@ -522,7 +523,7 @@ def _quota_value(resource: str, value: Any) -> int:
         return ResourceValues.from_quantities({"cpu": value}).cpu_millicores
     if "memory" in resource or "storage" in resource:
         return ResourceValues.from_quantities({"memory": value}).memory_bytes
-    return int(str(value))
+    return quantity_to_int(value)
 
 
 def _pod_events(events: list[client.V1Event]) -> dict[tuple[str, str], list[str]]:
