@@ -27,7 +27,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.7 .
+docker build -t kcp:0.1.8 .
 ```
 
 ## Cluster Access
@@ -43,16 +43,16 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.7` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.8` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.7-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.7-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.8-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.8-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.7-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.7-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.8-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.8-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
@@ -79,7 +79,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.7
+  kcp:0.1.8
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -90,11 +90,25 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.7 \
+  --entrypoint python kcp:0.1.8 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
 Open `https://<dashboard-host>:8443` and use `https://<dashboard-host>:8443/healthz` for a non-authenticated health check.
+
+## Verify Kubernetes API Access
+
+The image includes `kubectl v1.36.0` for a read-only connection check using the same mounted kubeconfig path available to KCP:
+
+```sh
+docker run --rm \
+  --volume /srv/kcp/clusters:/run/kcp/clusters:ro \
+  --entrypoint kubectl kcp:0.1.8 \
+  --kubeconfig /run/kcp/clusters/production.kubeconfig \
+  version --request-timeout=10s
+```
+
+Add `--context <context-name>` when the kubeconfig does not use the intended context as its current context. This command only reads the Kubernetes version endpoint; it does not modify the cluster.
 
 ## Cluster Connections
 
