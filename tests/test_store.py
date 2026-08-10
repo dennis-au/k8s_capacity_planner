@@ -86,6 +86,7 @@ class StoreTests(unittest.TestCase):
             kube_context="prod-west-readonly",
             endpoint="https://kubernetes.prod.example:6443/",
             api_ip="10.20.30.40",
+            disable_proxy=True,
         )
 
         self.assertEqual(connection["name"], "Production West")
@@ -93,7 +94,53 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(connection["kubeconfig_file"], "/run/kcp/prod-west.kubeconfig")
         self.assertEqual(connection["kube_context"], "prod-west-readonly")
         self.assertEqual(connection["api_ip"], "10.20.30.40")
+        self.assertTrue(connection["disable_proxy"])
         self.assertNotIn(b"read-only-token", self.store.db_path.read_bytes())
+
+    def test_migration_adds_proxy_setting_to_existing_clusters(self) -> None:
+        db_path = Path(self.temp_dir.name) / "previous-release.sqlite3"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE clusters (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    endpoint TEXT,
+                    kubeconfig_file TEXT,
+                    kube_context TEXT,
+                    api_ip TEXT,
+                    legacy_token_file TEXT,
+                    legacy_ca_file TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO clusters(
+                    name, endpoint, kubeconfig_file, kube_context, api_ip, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "Existing cluster",
+                    "https://kubernetes.example:6443",
+                    "/run/kcp/existing.kubeconfig",
+                    "existing",
+                    None,
+                    "2026-08-10T00:00:00+00:00",
+                    "2026-08-10T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        store = Store(db_path)
+        store.migrate()
+
+        self.assertFalse(store.get_cluster(1)["disable_proxy"])
 
     def test_multiple_clusters_keep_snapshots_separate(self) -> None:
         east = self.store.create_cluster(

@@ -509,6 +509,7 @@ def _collector_factory(store: Store) -> Callable[[dict[str, Any]], KubernetesCol
             str(cluster["kubeconfig_file"]),
             str(cluster["kube_context"]),
             str(cluster["api_ip"]) or None,
+            bool(cluster["disable_proxy"]),
         )
 
     return build
@@ -555,7 +556,7 @@ def _management_decision(plan: Any | None, quality: ReportQuality | None) -> Any
     )
 
 
-def _cluster_form_values() -> dict[str, str]:
+def _cluster_form_values() -> dict[str, str | bool]:
     return {
         "name": request.form.get("name", "").strip(),
         "kubeconfig_source": request.form.get("kubeconfig_source", "path").strip(),
@@ -563,25 +564,32 @@ def _cluster_form_values() -> dict[str, str]:
         "kubeconfig_text": request.form.get("kubeconfig_text", ""),
         "kube_context": request.form.get("kube_context", "").strip(),
         "api_ip": request.form.get("api_ip", "").strip(),
+        "disable_proxy": request.form.get("disable_proxy") == "1",
     }
 
 
 def _validate_cluster_form(
-    form: dict[str, str], kubeconfig_files: KubeconfigFiles, existing_file: str | None = None
-) -> tuple[dict[str, str], str | None]:
-    source = form["kubeconfig_source"]
+    form: dict[str, str | bool], kubeconfig_files: KubeconfigFiles, existing_file: str | None = None
+) -> tuple[dict[str, str | bool], str | None]:
+    source = str(form["kubeconfig_source"])
     imported_file: str | None = None
     if source == "existing":
         if not existing_file:
             raise ValueError("Choose a kubeconfig source.")
         kubeconfig_file = _readable_file(existing_file, "Existing kubeconfig")
-        details = inspect_kubeconfig(kubeconfig_file, form["kube_context"] or None, form["api_ip"] or None)
+        details = inspect_kubeconfig(
+            kubeconfig_file, str(form["kube_context"]) or None, str(form["api_ip"]) or None
+        )
     elif source == "path":
-        kubeconfig_file = _readable_file(form["kubeconfig_file"], "Kubeconfig")
-        details = inspect_kubeconfig(kubeconfig_file, form["kube_context"] or None, form["api_ip"] or None)
+        kubeconfig_file = _readable_file(str(form["kubeconfig_file"]), "Kubeconfig")
+        details = inspect_kubeconfig(
+            kubeconfig_file, str(form["kube_context"]) or None, str(form["api_ip"]) or None
+        )
     elif source == "paste":
-        details = inspect_kubeconfig_text(form["kubeconfig_text"], form["kube_context"] or None, form["api_ip"] or None)
-        imported_file = kubeconfig_files.save_text(form["kubeconfig_text"])
+        details = inspect_kubeconfig_text(
+            str(form["kubeconfig_text"]), str(form["kube_context"]) or None, str(form["api_ip"]) or None
+        )
+        imported_file = kubeconfig_files.save_text(str(form["kubeconfig_text"]))
         kubeconfig_file = imported_file
     elif source == "upload":
         contents = _uploaded_kubeconfig_text()
@@ -591,11 +599,12 @@ def _validate_cluster_form(
     else:
         raise ValueError("Choose a kubeconfig source.")
     normalized = {
-        "name": form["name"],
+        "name": str(form["name"]),
         "kubeconfig_file": kubeconfig_file,
         "kube_context": details.context,
         "endpoint": details.endpoint,
-        "api_ip": form["api_ip"],
+        "api_ip": str(form["api_ip"]),
+        "disable_proxy": bool(form["disable_proxy"]),
     }
     return normalized, imported_file
 
@@ -622,7 +631,7 @@ def _readable_file(value: str, label: str) -> str:
     return str(path)
 
 
-def _empty_cluster_form() -> dict[str, str]:
+def _empty_cluster_form() -> dict[str, str | bool]:
     return {
         "name": "",
         "kubeconfig_source": "upload",
@@ -630,10 +639,11 @@ def _empty_cluster_form() -> dict[str, str]:
         "kubeconfig_text": "",
         "kube_context": "",
         "api_ip": "",
+        "disable_proxy": False,
     }
 
 
-def _cluster_form(cluster: dict[str, Any]) -> dict[str, str]:
+def _cluster_form(cluster: dict[str, Any]) -> dict[str, str | bool]:
     return {
         "name": str(cluster["name"]),
         "kubeconfig_source": "existing",
@@ -641,6 +651,7 @@ def _cluster_form(cluster: dict[str, Any]) -> dict[str, str]:
         "kubeconfig_text": "",
         "kube_context": str(cluster["kube_context"]),
         "api_ip": str(cluster["api_ip"]),
+        "disable_proxy": bool(cluster["disable_proxy"]),
     }
 
 
@@ -1131,6 +1142,7 @@ _CLUSTER_FORM_TEMPLATE = """
       </div>
       <label for="kube-context">Kubeconfig context<input id="kube-context" name="kube_context" value="{{ form.kube_context }}" placeholder="Current context"></label>
       <label for="api-ip">Kubernetes API IP<input id="api-ip" name="api_ip" value="{{ form.api_ip }}" inputmode="decimal" placeholder="10.20.30.40"></label>
+      <label><input type="checkbox" name="disable_proxy" value="1" {% if form.disable_proxy %}checked{% endif %}>Do not use HTTP(S) proxy for this cluster</label>
       <button type="submit">{{ 'Save cluster' if cluster else 'Add cluster' }}</button>
     </form>
   </section>

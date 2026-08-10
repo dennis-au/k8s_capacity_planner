@@ -118,7 +118,10 @@ class KubernetesNormalizationTests(unittest.TestCase):
                     },
                 )()
 
-                KubernetesCollector.from_kubeconfig("/run/kcp/production.kubeconfig", "production", "10.20.30.40")
+                new_client.return_value.configuration.proxy = "http://proxy.darksite.local:3128"
+                KubernetesCollector.from_kubeconfig(
+                    "/run/kcp/production.kubeconfig", "production", "10.20.30.40", disable_proxy=True
+                )
 
         new_client.assert_called_once_with(
             config_file="/run/kcp/production.kubeconfig",
@@ -129,6 +132,7 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(configuration.host, "https://10.20.30.40:6443")
         self.assertEqual(configuration.tls_server_name, "production.darksite.local")
         self.assertEqual(configuration.assert_hostname, "production.darksite.local")
+        self.assertIsNone(configuration.proxy)
         self.assertTrue(callable(getattr(KubernetesCollector, "collect", None)))
 
     def test_connection_test_reads_only_the_kubernetes_version_endpoint(self) -> None:

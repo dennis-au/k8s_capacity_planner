@@ -15,7 +15,10 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 _USERNAME = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 _CLUSTER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 ._-]{1,63}$")
 _PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
-_CLUSTER_FIELDS = "id, name, endpoint, kubeconfig_file, kube_context, api_ip, legacy_token_file, legacy_ca_file"
+_CLUSTER_FIELDS = (
+    "id, name, endpoint, kubeconfig_file, kube_context, api_ip, disable_proxy, "
+    "legacy_token_file, legacy_ca_file"
+)
 _SETTINGS_SCHEDULE_ENABLED = "schedule_enabled"
 _SETTINGS_INTERVAL_MINUTES = "snapshot_interval_minutes"
 _SETTINGS_RETENTION_DAYS = "retention_days"
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS clusters (
     kubeconfig_file TEXT,
     kube_context TEXT,
     api_ip TEXT,
+    disable_proxy INTEGER NOT NULL DEFAULT 0,
     legacy_token_file TEXT,
     legacy_ca_file TEXT,
     created_at TEXT NOT NULL,
@@ -217,7 +221,13 @@ class Store:
             )
 
     def bootstrap_cluster(
-        self, name: str, kubeconfig_file: str, kube_context: str, endpoint: str, api_ip: str | None = None
+        self,
+        name: str,
+        kubeconfig_file: str,
+        kube_context: str,
+        endpoint: str,
+        api_ip: str | None = None,
+        disable_proxy: bool = False,
     ) -> dict[str, Any] | None:
         self._validate_cluster_connection(name, kubeconfig_file, kube_context, endpoint)
         now = _iso_now()
@@ -232,10 +242,11 @@ class Store:
                 return self._cluster_record(row)
             result = connection.execute(
                 """
-                INSERT INTO clusters(name, kubeconfig_file, kube_context, endpoint, api_ip, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO clusters(
+                    name, kubeconfig_file, kube_context, endpoint, api_ip, disable_proxy, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, kubeconfig_file, kube_context, endpoint.rstrip("/"), api_ip, now, now),
+                (name, kubeconfig_file, kube_context, endpoint.rstrip("/"), api_ip, int(disable_proxy), now, now),
             )
             cluster_id = int(result.lastrowid)
             connection.execute("INSERT INTO app_state(key, value) VALUES ('clusters_initialized', '1')")
@@ -246,7 +257,13 @@ class Store:
             return self._cluster_record(row)
 
     def create_cluster(
-        self, name: str, kubeconfig_file: str, kube_context: str, endpoint: str, api_ip: str | None = None
+        self,
+        name: str,
+        kubeconfig_file: str,
+        kube_context: str,
+        endpoint: str,
+        api_ip: str | None = None,
+        disable_proxy: bool = False,
     ) -> dict[str, Any]:
         self._validate_cluster_connection(name, kubeconfig_file, kube_context, endpoint)
         now = _iso_now()
@@ -254,10 +271,11 @@ class Store:
             with self._connection() as connection:
                 result = connection.execute(
                     """
-                    INSERT INTO clusters(name, kubeconfig_file, kube_context, endpoint, api_ip, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO clusters(
+                        name, kubeconfig_file, kube_context, endpoint, api_ip, disable_proxy, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (name, kubeconfig_file, kube_context, endpoint.rstrip("/"), api_ip, now, now),
+                    (name, kubeconfig_file, kube_context, endpoint.rstrip("/"), api_ip, int(disable_proxy), now, now),
                 )
                 row = connection.execute(
                     f"SELECT {_CLUSTER_FIELDS} FROM clusters WHERE id = ?", (result.lastrowid,)
@@ -267,7 +285,14 @@ class Store:
         return self._cluster_record(row)
 
     def update_cluster(
-        self, cluster_id: int, name: str, kubeconfig_file: str, kube_context: str, endpoint: str, api_ip: str | None = None
+        self,
+        cluster_id: int,
+        name: str,
+        kubeconfig_file: str,
+        kube_context: str,
+        endpoint: str,
+        api_ip: str | None = None,
+        disable_proxy: bool = False,
     ) -> dict[str, Any]:
         self._validate_cluster_connection(name, kubeconfig_file, kube_context, endpoint)
         try:
@@ -275,11 +300,20 @@ class Store:
                 result = connection.execute(
                     """
                     UPDATE clusters
-                    SET name = ?, kubeconfig_file = ?, kube_context = ?, endpoint = ?, api_ip = ?,
+                    SET name = ?, kubeconfig_file = ?, kube_context = ?, endpoint = ?, api_ip = ?, disable_proxy = ?,
                         legacy_token_file = NULL, legacy_ca_file = NULL, updated_at = ?
                     WHERE id = ?
                     """,
-                    (name, kubeconfig_file, kube_context, endpoint.rstrip("/"), api_ip, _iso_now(), cluster_id),
+                    (
+                        name,
+                        kubeconfig_file,
+                        kube_context,
+                        endpoint.rstrip("/"),
+                        api_ip,
+                        int(disable_proxy),
+                        _iso_now(),
+                        cluster_id,
+                    ),
                 )
                 if result.rowcount != 1:
                     raise ValueError("Cluster not found.")
@@ -309,7 +343,7 @@ class Store:
             rows = connection.execute(
                 """
                 SELECT clusters.id, clusters.name, clusters.endpoint, clusters.kubeconfig_file, clusters.kube_context,
-                       clusters.api_ip, clusters.legacy_token_file, clusters.legacy_ca_file,
+                       clusters.api_ip, clusters.disable_proxy, clusters.legacy_token_file, clusters.legacy_ca_file,
                        MAX(snapshots.collected_at) AS last_collected_at
                 FROM clusters
                 LEFT JOIN snapshots ON snapshots.cluster_id = clusters.id
@@ -509,6 +543,7 @@ class Store:
             "kubeconfig_file": str(row["kubeconfig_file"] or ""),
             "kube_context": str(row["kube_context"] or ""),
             "api_ip": str(row["api_ip"] or ""),
+            "disable_proxy": bool(row["disable_proxy"]),
             "legacy_connection": row["kubeconfig_file"] is None,
         }
 
@@ -519,6 +554,8 @@ class Store:
             return
         expected = {"kubeconfig_file", "kube_context", "api_ip", "legacy_token_file", "legacy_ca_file"}
         if expected.issubset(columns):
+            if "disable_proxy" not in columns:
+                connection.execute("ALTER TABLE clusters ADD COLUMN disable_proxy INTEGER NOT NULL DEFAULT 0")
             return
         connection.execute("DROP INDEX IF EXISTS clusters_name_idx")
         connection.execute("ALTER TABLE clusters RENAME TO clusters_legacy")
@@ -529,10 +566,10 @@ class Store:
         connection.execute(
             f"""
             INSERT INTO clusters(
-                id, name, endpoint, kubeconfig_file, kube_context, api_ip,
+                id, name, endpoint, kubeconfig_file, kube_context, api_ip, disable_proxy,
                 legacy_token_file, legacy_ca_file, created_at, updated_at
             )
-            SELECT id, name, {endpoint}, NULL, NULL, NULL, {token_file}, {ca_file}, created_at, updated_at
+            SELECT id, name, {endpoint}, NULL, NULL, NULL, 0, {token_file}, {ca_file}, created_at, updated_at
             FROM clusters_legacy
             """
         )

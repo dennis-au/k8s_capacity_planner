@@ -39,7 +39,11 @@ class KubernetesCollector:
 
     @classmethod
     def from_kubeconfig(
-        cls, kubeconfig_file: str, context: str | None = None, api_ip: str | None = None
+        cls,
+        kubeconfig_file: str,
+        context: str | None = None,
+        api_ip: str | None = None,
+        disable_proxy: bool = False,
     ) -> "KubernetesCollector":
         details = inspect_kubeconfig(kubeconfig_file, context, api_ip)
         api_client = kube_config.new_client_from_config(
@@ -49,6 +53,10 @@ class KubernetesCollector:
         )
         configuration = api_client.configuration
         configuration.host = details.endpoint
+        if disable_proxy:
+            configuration.proxy = None
+            configuration.no_proxy = None
+            configuration.proxy_headers = None
         if details.tls_server_name:
             configuration.tls_server_name = details.tls_server_name
             if api_ip:

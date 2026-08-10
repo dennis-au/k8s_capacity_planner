@@ -412,6 +412,7 @@ class DashboardTests(unittest.TestCase):
                 "kubeconfig_file": str(kubeconfig),
                 "kube_context": "prod-west-readonly",
                 "api_ip": "10.20.30.40",
+                "disable_proxy": "1",
             },
             follow_redirects=True,
         )
@@ -422,6 +423,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(production_west["endpoint"], "https://10.20.30.40:6443")
         self.assertEqual(production_west["kube_context"], "prod-west-readonly")
         self.assertEqual(production_west["api_ip"], "10.20.30.40")
+        self.assertTrue(production_west["disable_proxy"])
+        self.assertIn("Do not use HTTP(S) proxy for this cluster", saved.text)
+        self.assertRegex(saved.text, r'name="disable_proxy" value="1"\s+checked')
         self.assertNotIn(b"read-only-token", self.store.db_path.read_bytes())
 
     def test_cluster_connection_can_be_saved_from_pasted_kubeconfig(self) -> None:
@@ -755,7 +759,7 @@ class DashboardTests(unittest.TestCase):
             app = create_app(self.config, store=self.store, start_scheduler=False)
             app.extensions["kcp_service"].collector_factory(cluster)
 
-        from_kubeconfig.assert_called_once_with(str(kubeconfig), "prod-west-readonly", None)
+        from_kubeconfig.assert_called_once_with(str(kubeconfig), "prod-west-readonly", None, False)
 
     def test_active_cluster_scopes_manual_collection_and_history(self) -> None:
         west = self.store.create_cluster(

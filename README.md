@@ -27,7 +27,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.9 .
+docker build -t kcp:0.1.10 .
 ```
 
 ## Cluster Access
@@ -43,16 +43,16 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.9` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.10` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.9-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.9-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.10-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.10-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.9-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.9-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.10-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.10-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
@@ -79,7 +79,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.9
+  kcp:0.1.10
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -90,7 +90,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.9 \
+  --entrypoint python kcp:0.1.10 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
@@ -103,7 +103,7 @@ The image includes `kubectl v1.36.0` for a read-only connection check using the 
 ```sh
 docker run --rm \
   --volume /srv/kcp/clusters:/run/kcp/clusters:ro \
-  --entrypoint kubectl kcp:0.1.9 \
+  --entrypoint kubectl kcp:0.1.10 \
   --kubeconfig /run/kcp/clusters/production.kubeconfig \
   version --request-timeout=10s
 ```
@@ -113,7 +113,7 @@ Add `--context <context-name>` when the kubeconfig does not use the intended con
 For basic network reachability diagnostics, the image also includes `ping`:
 
 ```sh
-docker run --rm --entrypoint ping kcp:0.1.9 -c 3 <kubernetes-api-host-or-ip>
+docker run --rm --entrypoint ping kcp:0.1.10 -c 3 <kubernetes-api-host-or-ip>
 ```
 
 ICMP reachability does not prove Kubernetes API access; use the `kubectl version` command above for that check.
@@ -122,7 +122,7 @@ ICMP reachability does not prove Kubernetes API access; use the `kubectl version
 
 KCP supports multiple Kubernetes API endpoints per dashboard deployment. The **Clusters** screen lets the local administrator add, select, update, and take an immediate read-only snapshot for each connection after signing in. Each cluster keeps separate snapshots, findings, history, and exports. Scheduled collection visits all configured clusters sequentially, while page-level refresh collects only the selected cluster.
 
-For a mounted kubeconfig, mount the kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. Uploaded and pasted kubeconfigs should include the credentials and CA data they need. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
+For a mounted kubeconfig, mount the kubeconfig and any files it references into the container, then enter its mounted path and context in the dashboard. Uploaded and pasted kubeconfigs should include the credentials and CA data they need. An optional **Kubernetes API IP** field connects directly to a literal IPv4 or IPv6 address when cluster DNS is unavailable. Select **Do not use HTTP(S) proxy for this cluster** when the Kubernetes API must bypass proxy environment variables configured on the container. KCP preserves TLS verification: set `tls-server-name` in the kubeconfig when the API certificate uses a DNS name.
 
 KCP stores connection metadata in SQLite. Uploaded and pasted kubeconfigs are stored as local files in `/srv/kcp/data/kubeconfigs`; their contents are not written to SQLite. Mounted kubeconfigs remain external to KCP. It accepts static token, token-file, and client-certificate credentials, and rejects `exec`, `auth-provider`, proxy, and insecure-TLS kubeconfig settings. Existing token/CA connections remain visible with their historical reports, but must be updated with a kubeconfig before further collection.
 
