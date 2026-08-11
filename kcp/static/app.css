@@ -285,7 +285,7 @@ h3 { margin-bottom: 8px; font-size: 15px; }
 .trend-chart figcaption span { color: var(--muted); font-size: 12px; font-weight: 700; }
 .trend-chart figcaption strong { font-size: 21px; line-height: 1.1; }
 .trend-chart figcaption small { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
-.trend-chart svg { display: block; width: 100%; height: 118px; overflow: visible; border-bottom: 1px solid var(--line); }
+.trend-chart svg { display: block; width: 100%; height: 84px; overflow: visible; border-bottom: 1px solid var(--line); }
 .trend-baseline { stroke: var(--line-strong); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .trend-line { fill: none; stroke: var(--teal); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .trend-chart > div { display: flex; justify-content: space-between; gap: 16px; margin-top: 7px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }

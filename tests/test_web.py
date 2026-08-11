@@ -210,7 +210,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Reports", reports.text)
         self.assertIn("30-day trend evidence", reports.text)
 
-    def test_dashboard_does_not_load_report_history_for_capacity_flow(self) -> None:
+    def test_dashboard_loads_snapshot_history_for_capacity_trend(self) -> None:
         login = self.client.get("/login")
         self.client.post(
             "/login",
@@ -225,7 +225,42 @@ class DashboardTests(unittest.TestCase):
             response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        snapshots.assert_not_called()
+        snapshots.assert_called_once_with(1, limit=2_160)
+
+    def test_dashboard_renders_planning_safe_capacity_trend(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        cluster = self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        overview = self.client.get("/")
+        self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+        current = self.store.latest_snapshot(cluster["id"])
+        self.assertIsNotNone(current)
+        assert current is not None
+        earlier_payload = json.loads(json.dumps(current["payload"]))
+        earlier_at = datetime.fromisoformat(current["collected_at"]) - timedelta(days=1)
+        earlier_payload["snapshot"]["collected_at"] = earlier_at.isoformat()
+        earlier_payload["snapshot"]["nodes"][0]["requested"] = {
+            "cpu_millicores": 100,
+            "memory_bytes": 128 * 1024**2,
+        }
+        self.store.save_snapshot(
+            earlier_at,
+            current["cluster_version"],
+            earlier_payload,
+            cluster_id=cluster["id"],
+        )
+
+        dashboard = self.client.get("/")
+
+        self.assertIn("Capacity trend", dashboard.text)
+        self.assertIn("Planning-safe capacity", dashboard.text)
+        self.assertIn('class="trend-panel"', dashboard.text)
+        self.assertIn('class="trend-line"', dashboard.text)
+        self.assertIn("2 snapshots", dashboard.text)
 
     def test_first_login_has_no_cluster_until_a_kubeconfig_is_added(self) -> None:
         login = self.client.get("/login")
@@ -999,15 +1034,27 @@ class DashboardTests(unittest.TestCase):
             data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
         )
         kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
-        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        cluster = self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
         overview = self.client.get("/")
         self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+        historical_record = self.store.latest_snapshot(cluster["id"])
+        self.assertIsNotNone(historical_record)
+        assert historical_record is not None
+        newer_payload = json.loads(json.dumps(historical_record["payload"]))
+        newer_payload["snapshot"]["cluster_version"] = "v9.99.0"
+        newer_payload["snapshot"]["namespaces"].append({"name": "future", "has_limit_range": False})
+        self.store.save_snapshot(
+            datetime.now(UTC) + timedelta(minutes=1),
+            "v9.99.0",
+            newer_payload,
+            cluster_id=cluster["id"],
+        )
 
         reports = self.client.get("/reports")
         history = self.client.get("/history")
         export_json = self.client.get("/exports/latest.json")
         export_markdown = self.client.get("/exports/latest.md")
-        export_html = self.client.get("/exports/latest.html")
+        export_html = self.client.get(f"/exports/{historical_record['id']}.html")
         settings = self.client.get("/settings")
         allocation = self.client.get("/allocation")
 
@@ -1028,7 +1075,18 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Management decision: Capacity Available", export_markdown.text)
         self.assertIn("Total Node Capacity", export_markdown.text)
         self.assertIn("/docs/node-allocatable", export_markdown.text)
-        self.assertIn("Management decision: Capacity Available", export_html.text)
+        self.assertIn("Snapshot dashboard", export_html.text)
+        self.assertIn("Snapshot time", export_html.text)
+        self.assertIn(historical_record["collected_at"], export_html.text)
+        self.assertIn("Capacity flow", export_html.text)
+        self.assertIn("Namespace resources", export_html.text)
+        self.assertIn("payments", export_html.text)
+        self.assertIn("v1.36.1", export_html.text)
+        self.assertIn('class="dashboard-card"', export_html.text)
+        self.assertIn("style-src 'unsafe-inline'", export_html.headers["Content-Security-Policy"])
+        self.assertNotIn("v9.99.0", export_html.text)
+        self.assertNotIn("future", export_html.text)
+        self.assertNotIn("<pre>", export_html.text)
 
 
 def _csrf(text: str) -> str:

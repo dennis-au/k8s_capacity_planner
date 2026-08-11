@@ -70,7 +70,10 @@ def create_app(
 
     @app.after_request
     def set_security_headers(response: Response) -> Response:
-        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+        )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -158,6 +161,7 @@ def create_app(
             record,
             active_cluster["id"] if active_cluster else None,
             int(runtime_settings["planning_reserve_percent"]),
+            include_history=True,
         )
         return _render(
             "Dashboard",
@@ -165,6 +169,7 @@ def create_app(
             record=record,
             plan=plan,
             capacity_charts=_capacity_charts(plan),
+            trend_charts=_trend_charts(plan),
             namespace_resources=_namespace_resources(record),
             connection=active_cluster,
         )
@@ -460,7 +465,13 @@ def create_app(
         if format_name == "md":
             return Response(_markdown_export(record, plan, quality), mimetype="text/markdown")
         if format_name == "html":
-            return Response(_html_export(record, plan, quality), mimetype="text/html")
+            return Response(
+                _html_export(record, plan, quality),
+                mimetype="text/html",
+                headers={
+                    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+                },
+            )
         abort(404)
 
     def _render(title: str, body: str, authenticated: bool = True, **context: object) -> str:
@@ -859,6 +870,40 @@ def _capacity_charts(plan: Any) -> list[dict[str, Any]]:
     return charts
 
 
+def _trend_charts(plan: Any) -> list[dict[str, Any]]:
+    if plan is None or len(plan.trend.points) < 2:
+        return []
+
+    def sparkline(values: list[int]) -> str:
+        minimum = min(values)
+        maximum = max(values)
+        span = maximum - minimum
+        last_index = len(values) - 1
+        return " ".join(
+            f"{index / last_index * 100:.2f},{50 if span == 0 else 94 - (value - minimum) / span * 88:.2f}"
+            for index, value in enumerate(values)
+        )
+
+    resources = (
+        ("CPU", "Planning-safe CPU", "cpu_millicores", _format_cpu, _format_cpu_raw),
+        ("Memory", "Planning-safe memory", "memory_bytes", _format_bytes, _format_bytes_raw),
+    )
+    charts = []
+    for resource, label, attribute, format_value, format_raw in resources:
+        values = [getattr(point.planning_safe, attribute) for point in plan.trend.points]
+        charts.append(
+            {
+                "resource": resource,
+                "label": label,
+                "points": sparkline(values),
+                "first_display": format_value(values[0]),
+                "latest_display": format_value(values[-1]),
+                "latest_raw": format_raw(values[-1]),
+            }
+        )
+    return charts
+
+
 def _export_payload(record: dict[str, Any], plan: Any, quality: ReportQuality | None) -> dict[str, Any]:
     payload = dict(record["payload"])
     if plan is None:
@@ -982,9 +1027,110 @@ def _resource_text(resources: Any | None) -> str:
 
 
 def _html_export(record: dict[str, Any], plan: Any, quality: ReportQuality | None) -> str:
-    markdown = _markdown_export(record, plan, quality)
-    escaped = markdown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return f"<!doctype html><html><head><meta charset='utf-8'><title>K8S Capacity Planner Report</title></head><body><pre>{escaped}</pre></body></html>"
+    return render_template_string(
+        _HTML_EXPORT_TEMPLATE,
+        record=record,
+        plan=plan,
+        quality=quality,
+        capacity_charts=_capacity_charts(plan),
+        namespace_resources=_namespace_resources(record),
+        format_cpu=_format_cpu,
+        format_cpu_raw=_format_cpu_raw,
+        format_bytes=_format_bytes,
+        format_bytes_raw=_format_bytes_raw,
+    )
+
+
+_HTML_EXPORT_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ record.cluster_name or 'Kubernetes cluster' }} snapshot | K8S Capacity Planner</title>
+<style>
+  :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #eef2f6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #eef2f6; }
+  .snapshot-dashboard { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0 56px; }
+  .snapshot-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid #cad3df; }
+  .eyebrow { margin: 0 0 8px; color: #526174; font-size: 12px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
+  h1, h2, h3, p { margin-top: 0; }
+  h1 { margin-bottom: 8px; font-size: 32px; line-height: 1.15; }
+  h2 { margin-bottom: 6px; font-size: 21px; line-height: 1.25; }
+  h3 { margin: 0; font-size: 18px; }
+  .snapshot-header > div > p:last-child, .card-header p:last-child { margin-bottom: 0; color: #526174; line-height: 1.5; }
+  .snapshot-meta { display: grid; grid-template-columns: max-content minmax(180px, 1fr); gap: 8px 20px; min-width: 320px; margin: 0; font-size: 13px; }
+  .snapshot-meta dt { color: #526174; }
+  .snapshot-meta dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+  .dashboard-card { margin-top: 20px; border: 1px solid #cad3df; border-radius: 8px; background: #ffffff; overflow: hidden; }
+  .card-header { padding: 20px 22px 16px; border-bottom: 1px solid #dce3eb; }
+  .capacity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .resource-card { min-width: 0; padding: 20px 22px 22px; }
+  .resource-card + .resource-card { border-left: 1px solid #dce3eb; }
+  .resource-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 18px 0 12px; }
+  .resource-summary strong { font-size: 24px; }
+  .resource-summary span { color: #526174; font-size: 13px; text-align: right; }
+  .capacity-bar { display: flex; height: 14px; overflow: hidden; border-radius: 4px; background: #e8edf2; }
+  .capacity-segment { display: block; min-width: 0; }
+  .capacity-segment.not-allocatable { background: #7c8798; }
+  .capacity-segment.requested { background: #d9952b; }
+  .capacity-segment.remaining { background: #31836b; }
+  .capacity-list { display: grid; gap: 10px; margin: 18px 0 0; }
+  .capacity-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: baseline; }
+  .capacity-list dt { color: #526174; }
+  .capacity-list dd { margin: 0; text-align: right; }
+  .capacity-list strong { display: block; }
+  .capacity-list small { color: #526174; font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 680px; }
+  th, td { padding: 14px 22px; border-bottom: 1px solid #dce3eb; text-align: left; vertical-align: top; }
+  th { color: #526174; font-size: 12px; text-transform: uppercase; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .resource-pair { display: block; line-height: 1.5; white-space: nowrap; }
+  .snapshot-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .snapshot-detail { padding: 18px 22px; }
+  .snapshot-detail + .snapshot-detail { border-left: 1px solid #dce3eb; }
+  .snapshot-detail span { display: block; margin-bottom: 6px; color: #526174; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .snapshot-detail strong { display: block; font-size: 16px; }
+  .snapshot-detail p { margin: 6px 0 0; color: #526174; font-size: 13px; line-height: 1.45; }
+  .notice { margin: 16px 22px 22px; padding: 12px 14px; border-left: 3px solid #c47a18; background: #fff6e5; color: #593900; line-height: 1.45; }
+  @media (max-width: 760px) {
+    .snapshot-dashboard { width: min(100% - 24px, 1180px); padding-top: 24px; }
+    .snapshot-header { align-items: start; flex-direction: column; }
+    .snapshot-meta { min-width: 0; width: 100%; }
+    .capacity-grid, .snapshot-details { grid-template-columns: 1fr; }
+    .resource-card + .resource-card, .snapshot-detail + .snapshot-detail { border-top: 1px solid #dce3eb; border-left: 0; }
+    .card-header, .resource-card, .snapshot-detail { padding-right: 18px; padding-left: 18px; }
+    th, td { padding-right: 18px; padding-left: 18px; }
+  }
+</style>
+</head>
+<body>
+<main class="snapshot-dashboard">
+  <header class="snapshot-header">
+    <div><p class="eyebrow">K8S Capacity Planner</p><h1>Snapshot dashboard</h1><p>Capacity and namespace resource data captured at this stored snapshot time.</p></div>
+    <dl class="snapshot-meta"><dt>Cluster</dt><dd>{{ record.cluster_name or 'Unknown' }}</dd><dt>Snapshot time</dt><dd>{{ record.collected_at }}</dd><dt>Kubernetes</dt><dd>{{ record.cluster_version }}</dd></dl>
+  </header>
+
+  <section class="dashboard-card">
+    <header class="card-header"><p class="eyebrow">Capacity flow</p><h2>From total resources to raw remaining capacity</h2><p>Total node capacity, Kubernetes allocatable capacity, declared Pod requests, and raw remaining capacity from this snapshot.</p></header>
+    {% if capacity_charts %}<div class="capacity-grid">{% for chart in capacity_charts %}
+      <article class="resource-card"><h3>{{ chart.resource }}</h3><div class="resource-summary"><strong>{{ chart.total_display }}</strong><span>{{ chart.total_raw }} total node capacity</span></div><div class="capacity-bar" role="img" aria-label="{{ chart.resource }} capacity composition">{% for segment in chart.segments %}{% if segment.width > 0 %}<span class="capacity-segment {{ segment.class_name }}" style="width: {{ segment.width }}%" title="{{ segment.label }}: {{ segment.display }}"></span>{% endif %}{% endfor %}</div><dl class="capacity-list">{% for segment in chart.segments %}<div><dt>{{ segment.label }}</dt><dd><strong>{{ segment.display }}</strong><small>{{ segment.raw }}</small></dd></div>{% endfor %}</dl></article>
+    {% endfor %}</div>{% else %}<p class="notice">Node capacity was not recorded in this snapshot.</p>{% endif %}
+  </section>
+
+  <section class="dashboard-card">
+    <header class="card-header"><p class="eyebrow">Resource allocation</p><h2>Namespace resources</h2><p>Declared requests, limits, and observed CPU and memory usage from this snapshot.</p></header>
+    <div class="table-wrap"><table><thead><tr><th>Namespace</th><th>Requests</th><th>Limits</th><th>Actual used</th></tr></thead><tbody>{% for namespace in namespace_resources %}<tr><td>{{ namespace.name }}</td><td><span class="resource-pair">CPU {{ format_cpu(namespace.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.limits.memory_bytes) }}</span></td><td>{% if namespace.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr>{% else %}<tr><td colspan="4">No namespace data was recorded in this snapshot.</td></tr>{% endfor %}</tbody></table></div>
+  </section>
+
+  <section class="dashboard-card">
+    <div class="snapshot-details"><article class="snapshot-detail"><span>Metrics API</span><strong>{{ 'Available' if record.payload.snapshot.metrics_available else 'Unavailable' }}</strong><p>Actual usage is shown only where Metrics API data was collected.</p></article><article class="snapshot-detail"><span>Data quality</span><strong>{{ quality.state if quality else 'Unknown' }}</strong><p>{{ quality.message if quality else 'No report quality is available.' }}</p></article><article class="snapshot-detail"><span>Planning reserve</span><strong>{{ plan.planning_reserve_percent if plan else 0 }}%</strong><p>Applied when calculating planning-safe capacity; it does not change the raw remaining values above.</p></article></div>
+    {% if quality and quality.warnings %}<div class="notice">{% for warning in quality.warnings %}{{ warning }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>{% endif %}
+  </section>
+</main>
+</body>
+</html>"""
 
 
 class _LoginThrottle:
@@ -1067,6 +1213,11 @@ _DASHBOARD_TEMPLATE = """
       <header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From total resources to raw remaining capacity</h2><p>Total node capacity, Kubernetes allocatable capacity, declared Pod requests, and raw remaining capacity from the latest snapshot.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>
       {% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total node capacity</small></div><div class="capacity-chart-outcome"><span>Raw remaining</span><strong>{{ chart.remaining_display }}</strong><small>{{ chart.remaining_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition"><title>{{ chart.resource }} capacity composition</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect Node Capacity and render the capacity flow.</p>{% endif %}
       <p class="capacity-chart-note"><strong>Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Raw remaining</strong> is Node Allocatable minus scheduled Pod requests. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p>
+    </section>
+
+    <section class="trend-panel" aria-labelledby="capacity-trend-title">
+      <header><div><p class="eyebrow">Capacity trend</p><h2 id="capacity-trend-title">Planning-safe capacity</h2><p>Planning-safe CPU and memory across the retained 30-day snapshot window.</p></div><dl><dt>Samples</dt><dd>{{ plan.trend.sample_count }} snapshot{{ '' if plan.trend.sample_count == 1 else 's' }}</dd><dt>State</dt><dd>{{ plan.trend.state }}</dd></dl></header>
+      {% if trend_charts %}<div class="trend-chart-grid">{% for chart in trend_charts %}<figure class="trend-chart" aria-labelledby="trend-chart-{{ chart.resource|lower }}"><figcaption><span id="trend-chart-{{ chart.resource|lower }}">{{ chart.label }}</span><strong>{{ chart.latest_display }}</strong><small>{{ chart.latest_raw }}</small></figcaption><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ chart.label }} trend"><line class="trend-baseline" x1="0" y1="94" x2="100" y2="94"></line><polyline class="trend-line" points="{{ chart.points }}"></polyline></svg><div><span>{{ chart.first_display }}</span><span>{{ chart.latest_display }}</span></div></figure>{% endfor %}</div>{% else %}<p class="trend-empty">{{ plan.trend.summary }}</p>{% endif %}
     </section>
 
     <section class="capacity-chart-panel namespace-resource-panel" aria-labelledby="namespace-resources-title">
