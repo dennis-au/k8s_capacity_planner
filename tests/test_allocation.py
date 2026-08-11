@@ -268,6 +268,27 @@ class AllocationPlanTests(unittest.TestCase):
         self.assertEqual(plan.trend.confidence, "Preliminary trend")
         self.assertEqual(plan.capacity_status.confidence, "Request-based")
 
+    def test_resource_trend_uses_recorded_capacity_requests_limits_and_usage(self) -> None:
+        newest_at = datetime(2026, 8, 7, tzinfo=UTC)
+        older = _snapshot_at(newest_at - timedelta(days=1), requested_cpu=100, requested_memory=200)
+        older["nodes"][0]["limits"] = {"cpu_millicores": 300, "memory_bytes": 400}
+
+        newest = _snapshot_at(newest_at, requested_cpu=500, requested_memory=600)
+        newest["metrics_available"] = True
+        newest["nodes"][0]["limits"] = {"cpu_millicores": 700, "memory_bytes": 800}
+        newest["nodes"][0]["usage"] = {"cpu_millicores": 250, "memory_bytes": 350}
+
+        plan = build_allocation_plan(newest, [newest, older], self.docs)
+
+        self.assertEqual(plan.resource_trend.sample_count, 2)
+        self.assertEqual(plan.resource_trend.points[0].total_capacity, ResourceValues(cpu_millicores=1200, memory_bytes=1200))
+        self.assertEqual(plan.resource_trend.points[0].requested, ResourceValues(cpu_millicores=100, memory_bytes=200))
+        self.assertEqual(plan.resource_trend.points[0].limits, ResourceValues(cpu_millicores=300, memory_bytes=400))
+        self.assertIsNone(plan.resource_trend.points[0].usage)
+        self.assertEqual(plan.resource_trend.points[1].requested, ResourceValues(cpu_millicores=500, memory_bytes=600))
+        self.assertEqual(plan.resource_trend.points[1].limits, ResourceValues(cpu_millicores=700, memory_bytes=800))
+        self.assertEqual(plan.resource_trend.points[1].usage, ResourceValues(cpu_millicores=250, memory_bytes=350))
+
     def test_deployment_approval_reports_capacity_gaps_and_per_pod_fit(self) -> None:
         snapshot = {
             "metrics_available": False,

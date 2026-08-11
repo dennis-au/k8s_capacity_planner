@@ -52,6 +52,22 @@ class CapacityTrend:
 
 
 @dataclass(frozen=True)
+class ResourceTrendPoint:
+    collected_at: datetime
+    total_capacity: ResourceValues | None
+    requested: ResourceValues
+    limits: ResourceValues
+    usage: ResourceValues | None
+
+
+@dataclass(frozen=True)
+class ResourceTrend:
+    summary: str
+    sample_count: int
+    points: list[ResourceTrendPoint]
+
+
+@dataclass(frozen=True)
 class ManagementDecision:
     state: str
     summary: str
@@ -144,6 +160,7 @@ class AllocationPlan:
     eligible_node_count: int
     capacity_status: CapacityStatus
     trend: CapacityTrend
+    resource_trend: ResourceTrend
     capacity_source: dict[str, str]
     rolling_update_capacity: RollingUpdateCapacity
 
@@ -198,6 +215,7 @@ def build_allocation_plan(
         eligible_node_count=sum(1 for node in nodes if node.eligible),
         capacity_status=_capacity_status(nodes, total_remaining, total_planning_safe, snapshot.get("metrics_available") is True),
         trend=_capacity_trend([snapshot, *history], planning_reserve_percent),
+        resource_trend=_resource_trend([snapshot, *history]),
         capacity_source=docs.source_for_rule("node-headroom"),
         rolling_update_capacity=rolling_update_capacity,
     )
@@ -608,6 +626,46 @@ def _trend_points(
     cutoff = latest_at - timedelta(days=30)
     by_time = {point.collected_at: point for point in extracted if point.collected_at >= cutoff}
     return [by_time[timestamp] for timestamp in sorted(by_time)]
+
+
+def _resource_trend(snapshots: Iterable[dict[str, Any]]) -> ResourceTrend:
+    latest_at: datetime | None = None
+    extracted: list[ResourceTrendPoint] = []
+    for item in snapshots:
+        snapshot = _historical_snapshot(item)
+        collected_at = _snapshot_time(snapshot, item)
+        if collected_at is None:
+            continue
+        nodes = [node for node in snapshot.get("nodes", []) if isinstance(node, dict)]
+        capacities = [node.get("capacity") for node in nodes]
+        total_capacity = (
+            _sum_resources(_resources(capacity) for capacity in capacities)
+            if nodes and all(isinstance(capacity, dict) for capacity in capacities)
+            else None
+        )
+        usage_available = snapshot.get("metrics_available") is True and all("usage" in node for node in nodes)
+        extracted.append(
+            ResourceTrendPoint(
+                collected_at=collected_at,
+                total_capacity=total_capacity,
+                requested=_sum_resources(_resources(node.get("requested")) for node in nodes),
+                limits=_sum_resources(_resources(node.get("limits")) for node in nodes),
+                usage=_sum_resources(_resources(node.get("usage")) for node in nodes) if usage_available else None,
+            )
+        )
+        latest_at = collected_at if latest_at is None or collected_at > latest_at else latest_at
+
+    if latest_at is None:
+        return ResourceTrend("Resource history unavailable: collect at least two snapshots.", 0, [])
+    cutoff = latest_at - timedelta(days=30)
+    by_time = {point.collected_at: point for point in extracted if point.collected_at >= cutoff}
+    points = [by_time[timestamp] for timestamp in sorted(by_time)]
+    summary = (
+        f"{len(points)} snapshots across the retained 30-day window."
+        if len(points) >= 2
+        else "Resource history unavailable: collect at least two snapshots."
+    )
+    return ResourceTrend(summary, len(points), points)
 
 
 def _historical_snapshot(item: dict[str, Any]) -> dict[str, Any]:

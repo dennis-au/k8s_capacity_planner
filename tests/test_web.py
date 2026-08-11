@@ -12,7 +12,7 @@ from unittest.mock import patch
 from kcp.config import RuntimeConfig
 from kcp.models import ClusterSnapshot, NamespaceSummary, NodeSummary, ResourceValues, WorkloadSummary
 from kcp.store import Store
-from kcp.web import _namespace_resources, create_app
+from kcp.web import _namespace_resource_total, _namespace_resources, create_app
 
 
 class _Collector:
@@ -189,6 +189,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("namespace-resource-panel", collected.text)
         self.assertIn("Namespace resources", collected.text)
         self.assertIn("Actual used", collected.text)
+        self.assertIn("All namespaces", collected.text)
+        self.assertIn("<tfoot>", collected.text)
         self.assertIn("payments", collected.text)
         self.assertIn("logging", collected.text)
         self.assertNotIn("Concurrent rollout capacity", collected.text)
@@ -227,7 +229,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         snapshots.assert_called_once_with(1, limit=2_160)
 
-    def test_dashboard_renders_planning_safe_capacity_trend(self) -> None:
+    def test_dashboard_renders_factual_resource_trend(self) -> None:
         login = self.client.get("/login")
         self.client.post(
             "/login",
@@ -247,6 +249,14 @@ class DashboardTests(unittest.TestCase):
             "cpu_millicores": 100,
             "memory_bytes": 128 * 1024**2,
         }
+        earlier_payload["snapshot"]["nodes"][0]["limits"] = {
+            "cpu_millicores": 800,
+            "memory_bytes": 768 * 1024**2,
+        }
+        earlier_payload["snapshot"]["nodes"][0]["usage"] = {
+            "cpu_millicores": 200,
+            "memory_bytes": 256 * 1024**2,
+        }
         self.store.save_snapshot(
             earlier_at,
             current["cluster_version"],
@@ -256,11 +266,19 @@ class DashboardTests(unittest.TestCase):
 
         dashboard = self.client.get("/")
 
-        self.assertIn("Capacity trend", dashboard.text)
-        self.assertIn("Planning-safe capacity", dashboard.text)
+        self.assertIn("Resource trend", dashboard.text)
+        self.assertIn("Actual use, requests, limits, and total capacity", dashboard.text)
+        self.assertIn("Total capacity", dashboard.text)
+        self.assertIn("Requested", dashboard.text)
+        self.assertIn("Limits", dashboard.text)
+        self.assertIn("Actual used", dashboard.text)
         self.assertIn('class="trend-panel"', dashboard.text)
-        self.assertIn('class="trend-line"', dashboard.text)
+        self.assertIn('class="trend-capacity-area"', dashboard.text)
+        self.assertIn('class="trend-request-line"', dashboard.text)
+        self.assertIn('class="trend-limit-line"', dashboard.text)
+        self.assertIn('class="trend-usage-line"', dashboard.text)
         self.assertIn("2 snapshots", dashboard.text)
+        self.assertNotIn("Planning-safe capacity", dashboard.text)
 
     def test_first_login_has_no_cluster_until_a_kubeconfig_is_added(self) -> None:
         login = self.client.get("/login")
@@ -366,6 +384,11 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(rows[2]["requests"], {"cpu_millicores": 525, "memory_bytes": 528})
         self.assertEqual(rows[2]["limits"], {"cpu_millicores": 1050, "memory_bytes": 1056})
         self.assertEqual(rows[2]["usage"], {"cpu_millicores": 320, "memory_bytes": 264})
+
+        total = _namespace_resource_total(rows)
+        self.assertEqual(total["requests"], {"cpu_millicores": 625, "memory_bytes": 592})
+        self.assertEqual(total["limits"], {"cpu_millicores": 1250, "memory_bytes": 1184})
+        self.assertIsNone(total["usage"])
 
         record["payload"]["snapshot"]["metrics_available"] = False
         self.assertEqual(_namespace_resources(record)[0]["usage"], None)
@@ -1080,6 +1103,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(historical_record["collected_at"], export_html.text)
         self.assertIn("Capacity flow", export_html.text)
         self.assertIn("Namespace resources", export_html.text)
+        self.assertIn("All namespaces", export_html.text)
         self.assertIn("payments", export_html.text)
         self.assertIn("v1.36.1", export_html.text)
         self.assertIn('class="dashboard-card"', export_html.text)
