@@ -29,6 +29,19 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.store.verify_admin("admin", "correct horse battery staple"))
         self.assertTrue(self.store.verify_admin("admin", "a newer correct password"))
 
+    def test_admin_password_accepts_any_nonempty_value_up_to_1024_characters(self) -> None:
+        self.assertTrue(self.store.bootstrap_admin("admin", "x"))
+        self.assertTrue(self.store.verify_admin("admin", "x"))
+
+        maximum_length_password = "x" * 1024
+        self.store.reset_admin_password("admin", maximum_length_password)
+        self.assertTrue(self.store.verify_admin("admin", maximum_length_password))
+
+        with self.assertRaisesRegex(ValueError, "password must be between 1 and 1024 characters"):
+            self.store.reset_admin_password("admin", "")
+        with self.assertRaisesRegex(ValueError, "password must be between 1 and 1024 characters"):
+            self.store.reset_admin_password("admin", "x" * 1025)
+
     def test_runtime_settings_use_defaults_and_persist_valid_updates(self) -> None:
         self.assertEqual(
             self.store.get_runtime_settings(default_refresh_seconds=3600, default_retention_days=90),

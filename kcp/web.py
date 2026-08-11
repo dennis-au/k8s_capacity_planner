@@ -165,6 +165,7 @@ def create_app(
             record=record,
             plan=plan,
             capacity_charts=_capacity_charts(plan),
+            namespace_resources=_namespace_resources(record),
             connection=active_cluster,
         )
 
@@ -701,6 +702,51 @@ def _summary(record: dict | None) -> dict[str, int]:
     }
 
 
+def _namespace_resources(record: dict | None) -> list[dict[str, Any]]:
+    if record is None:
+        return []
+    snapshot = record["payload"]["snapshot"]
+    metrics_available = snapshot.get("metrics_available") is True
+    rows: dict[str, dict[str, Any]] = {}
+
+    def row_for(name: str) -> dict[str, Any]:
+        return rows.setdefault(
+            name,
+            {
+                "name": name,
+                "requests": {"cpu_millicores": 0, "memory_bytes": 0},
+                "limits": {"cpu_millicores": 0, "memory_bytes": 0},
+                "usage": {"cpu_millicores": 0, "memory_bytes": 0},
+                "usage_complete": metrics_available,
+            },
+        )
+
+    for namespace in snapshot.get("namespaces", []):
+        row_for(str(namespace.get("name", "default")))
+    for workload in snapshot.get("workloads", []):
+        row = row_for(str(workload.get("namespace", "default")))
+        for key in ("requests", "limits"):
+            values = workload.get(key) or {}
+            row[key]["cpu_millicores"] += int(values.get("cpu_millicores", 0))
+            row[key]["memory_bytes"] += int(values.get("memory_bytes", 0))
+        usage = workload.get("usage")
+        if usage is None:
+            row["usage_complete"] = False
+            continue
+        row["usage"]["cpu_millicores"] += int(usage.get("cpu_millicores", 0))
+        row["usage"]["memory_bytes"] += int(usage.get("memory_bytes", 0))
+
+    return [
+        {
+            "name": row["name"],
+            "requests": row["requests"],
+            "limits": row["limits"],
+            "usage": row["usage"] if row["usage_complete"] else None,
+        }
+        for _, row in sorted(rows.items())
+    ]
+
+
 def _report_quality(record: dict[str, Any] | None, snapshot_interval_minutes: int) -> ReportQuality | None:
     if record is None:
         return None
@@ -976,7 +1022,7 @@ _BASE_TEMPLATE = """<!doctype html>
 
 _LOGIN_TEMPLATE = """<section class="login-panel"><p class="eyebrow">Dark-site operation</p><h1>K8S Capacity Planner</h1><p>Sign in to review the configured Kubernetes endpoint.</p><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Administrator<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section>"""
 
-_ACCOUNT_TEMPLATE = """<div class="account-layout"><section class="account-summary"><p class="eyebrow">Local administrator</p><h2>Administrator account</h2><dl><dt>Username</dt><dd>{{ username }}</dd><dt>Authentication</dt><dd>Local password</dd></dl></section><section class="account-form"><p class="eyebrow">Password</p><h2>Change password</h2><form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="new-password">New password<input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><label for="confirm-password">Confirm new password<input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><button type="submit">Update password</button></form></section></div>"""
+_ACCOUNT_TEMPLATE = """<div class="account-layout"><section class="account-summary"><p class="eyebrow">Local administrator</p><h2>Administrator account</h2><dl><dt>Username</dt><dd>{{ username }}</dd><dt>Authentication</dt><dd>Local password</dd></dl></section><section class="account-form"><p class="eyebrow">Password</p><h2>Change password</h2><form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="new-password">New password<input id="new-password" name="new_password" type="password" autocomplete="new-password" maxlength="1024" required></label><label for="confirm-password">Confirm new password<input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" maxlength="1024" required></label><button type="submit">Update password</button></form></section></div>"""
 
 _SETTINGS_TEMPLATE = """<div class="settings-layout"><section class="settings-summary"><p class="eyebrow">Runtime policy</p><h2>Collection settings</h2><dl><dt>Automatic snapshots</dt><dd>{{ 'Enabled' if settings.schedule_enabled else 'Paused' }}</dd><dt>Snapshot interval</dt><dd>Every {{ settings.snapshot_interval_minutes }} minutes</dd><dt>Report retention</dt><dd>{{ settings.retention_days }} days</dd><dt>Planning reserve</dt><dd>{{ settings.planning_reserve_percent }}% of each eligible node</dd></dl></section><section class="settings-form"><p class="eyebrow">Scheduling</p><h2>Update settings</h2><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="checkbox-label" for="schedule-enabled"><input id="schedule-enabled" name="schedule_enabled" type="checkbox" value="1" {% if settings.schedule_enabled %}checked{% endif %}>Automatic snapshots</label><label for="snapshot-interval">Snapshot interval (minutes)<input id="snapshot-interval" name="snapshot_interval_minutes" type="number" min="15" max="1440" step="1" value="{{ settings.snapshot_interval_minutes }}" required></label><label for="retention-days">Report retention (days)<input id="retention-days" name="retention_days" type="number" min="1" max="3650" step="1" value="{{ settings.retention_days }}" required></label><label for="planning-reserve">Planning reserve (%)<input id="planning-reserve" name="planning_reserve_percent" type="number" min="0" max="50" step="1" value="{{ settings.planning_reserve_percent }}" required></label><p class="form-hint">Capacity Planner policy, not a Kubernetes-mandated threshold.</p><button type="submit">Save settings</button></form></section></div>"""
 
@@ -1023,23 +1069,9 @@ _DASHBOARD_TEMPLATE = """
       <p class="capacity-chart-note"><strong>Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Raw remaining</strong> is Node Allocatable minus scheduled Pod requests. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p>
     </section>
 
-    {% set rollouts = plan.rolling_update_capacity %}
-    <section class="rolling-update-panel" aria-labelledby="rolling-update-title">
-      <header class="rolling-update-heading"><div><p class="eyebrow">Concurrent rollout capacity</p><h2 id="rolling-update-title">One Deployment rollout per namespace</h2><p>Additional declared Pod requests if one Deployment in every namespace uses its configured rolling-update surge at the same time.</p></div><span class="rolling-update-status {{ rollouts.status|lower|replace(' ', '-') }}">{{ rollouts.status }}</span></header>
-      {% if rollouts.status == 'No deployments' %}
-        <p class="rolling-update-empty">No Deployment workloads were collected in this snapshot.</p>
-      {% else %}
-        <div class="rolling-update-metrics">
-          <div><span>Namespaces</span><strong>{{ rollouts.namespace_count }}</strong><small>{{ rollouts.deployment_count }} Deployments considered</small></div>
-          <div><span>Additional CPU request</span><strong>{{ format_cpu(rollouts.additional_requests.cpu_millicores) }}</strong><small>{{ format_cpu_raw(rollouts.additional_requests.cpu_millicores) }}</small></div>
-          <div><span>Additional memory request</span><strong>{{ format_bytes(rollouts.additional_requests.memory_bytes) }}</strong><small>{{ format_bytes_raw(rollouts.additional_requests.memory_bytes) }}</small></div>
-          <div><span>CPU after rollouts</span><strong>{{ format_cpu(rollouts.remaining_after.cpu_millicores) }}</strong><small>{% if rollouts.shortfall.cpu_millicores %}{{ format_cpu_raw(rollouts.shortfall.cpu_millicores) }} shortfall{% else %}{{ format_cpu_raw(rollouts.remaining_after.cpu_millicores) }} remaining{% endif %}</small></div>
-          <div><span>Memory after rollouts</span><strong>{{ format_bytes(rollouts.remaining_after.memory_bytes) }}</strong><small>{% if rollouts.shortfall.memory_bytes %}{{ format_bytes_raw(rollouts.shortfall.memory_bytes) }} shortfall{% else %}{{ format_bytes_raw(rollouts.remaining_after.memory_bytes) }} remaining{% endif %}</small></div>
-        </div>
-        <div class="rolling-update-table-wrap"><table class="rolling-update-table"><thead><tr><th>Namespace</th><th>Deployments</th><th>CPU peak rollout</th><th>Memory peak rollout</th><th>Data</th></tr></thead><tbody>{% for item in rollouts.namespaces %}<tr><td>{{ item.namespace }}</td><td>{{ item.deployment_count }}</td><td>{% if item.cpu_peak_deployment %}<strong>{{ item.cpu_peak_deployment }}</strong><br><span>{{ format_cpu(item.additional_requests.cpu_millicores) }} / {{ format_cpu_raw(item.additional_requests.cpu_millicores) }}</span>{% else %}Not calculated{% endif %}</td><td>{% if item.memory_peak_deployment %}<strong>{{ item.memory_peak_deployment }}</strong><br><span>{{ format_bytes(item.additional_requests.memory_bytes) }} / {{ format_bytes_raw(item.additional_requests.memory_bytes) }}</span>{% else %}Not calculated{% endif %}</td><td>{{ 'Complete' if item.data_complete else 'Incomplete' }}</td></tr>{% endfor %}</tbody></table></div>
-        <p class="rolling-update-note"><strong>Conservative envelope:</strong> within a namespace, CPU and memory each use the largest additional request among its Deployments. Those two peaks can come from different Deployments. This compares aggregate declared requests with aggregate Raw remaining capacity; it does not model scheduler placement.</p>
-        {% if rollouts.data_gaps %}<div class="rolling-update-gaps"><strong>Snapshot data gaps</strong><ul>{% for gap in rollouts.data_gaps %}<li>{{ gap }}</li>{% endfor %}</ul></div>{% endif %}
-      {% endif %}
+    <section class="capacity-chart-panel namespace-resource-panel" aria-labelledby="namespace-resources-title">
+      <header class="capacity-chart-heading"><div><p class="eyebrow">Resource allocation</p><h2 id="namespace-resources-title">Namespace resources</h2><p>Declared requests, limits, and observed CPU and memory usage from the latest snapshot.</p></div></header>
+      <table><thead><tr><th>Namespace</th><th>Requests</th><th>Limits</th><th>Actual used</th></tr></thead><tbody>{% for namespace in namespace_resources %}<tr><td>{{ namespace.name }}</td><td><span class="resource-pair">CPU {{ format_cpu(namespace.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.limits.memory_bytes) }}</span></td><td>{% if namespace.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr>{% else %}<tr><td colspan="4">No namespace data available.</td></tr>{% endfor %}</tbody></table>
     </section>
   </div>
 {% endif %}

@@ -12,7 +12,7 @@ from unittest.mock import patch
 from kcp.config import RuntimeConfig
 from kcp.models import ClusterSnapshot, NamespaceSummary, NodeSummary, ResourceValues, WorkloadSummary
 from kcp.store import Store
-from kcp.web import create_app
+from kcp.web import _namespace_resources, create_app
 
 
 class _Collector:
@@ -186,13 +186,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("2,500m", collected.text)
         self.assertIn("3,221,225,472 B", collected.text)
         self.assertIn('href="/docs/node-allocatable"', collected.text)
-        self.assertIn("One Deployment rollout per namespace", collected.text)
-        self.assertIn("Sufficient", collected.text)
-        self.assertIn("Additional CPU request", collected.text)
-        self.assertIn("CPU after rollouts", collected.text)
+        self.assertIn("namespace-resource-panel", collected.text)
+        self.assertIn("Namespace resources", collected.text)
+        self.assertIn("Actual used", collected.text)
         self.assertIn("payments", collected.text)
         self.assertIn("logging", collected.text)
-        self.assertIn("Conservative envelope", collected.text)
+        self.assertNotIn("Concurrent rollout capacity", collected.text)
+        self.assertNotIn("One Deployment rollout per namespace", collected.text)
+        self.assertNotIn("Conservative envelope", collected.text)
         self.assertNotIn("30-day request trend", collected.text)
         self.assertNotIn("Full resource figures", collected.text)
         self.assertNotIn("Observed usage", collected.text)
@@ -258,13 +259,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(account.status_code, 200)
         self.assertIn("Administrator account", account.text)
         self.assertIn("admin", account.text)
+        self.assertNotIn('minlength="12"', account.text)
 
         changed = self.client.post(
             "/account",
             data={
                 "csrf_token": _csrf(account.text),
-                "new_password": "a newer correct password",
-                "confirm_password": "a newer correct password",
+                "new_password": "x",
+                "confirm_password": "x",
             },
             follow_redirects=True,
         )
@@ -284,10 +286,92 @@ class DashboardTests(unittest.TestCase):
         new_login = new_password_client.get("/login")
         new_password = new_password_client.post(
             "/login",
-            data={"username": "admin", "password": "a newer correct password", "csrf_token": _csrf(new_login.text)},
+            data={"username": "admin", "password": "x", "csrf_token": _csrf(new_login.text)},
             follow_redirects=True,
         )
         self.assertIn("Dashboard", new_password.text)
+
+    def test_namespace_resources_aggregate_workloads_and_mark_incomplete_usage_unavailable(self) -> None:
+        record = {
+            "payload": {
+                "snapshot": {
+                    "metrics_available": True,
+                    "namespaces": [{"name": "empty"}, {"name": "payments"}, {"name": "logging"}],
+                    "workloads": [
+                        {
+                            "namespace": "payments",
+                            "requests": {"cpu_millicores": 500, "memory_bytes": 512},
+                            "limits": {"cpu_millicores": 1000, "memory_bytes": 1024},
+                            "usage": {"cpu_millicores": 300, "memory_bytes": 256},
+                        },
+                        {
+                            "namespace": "payments",
+                            "requests": {"cpu_millicores": 25, "memory_bytes": 16},
+                            "limits": {"cpu_millicores": 50, "memory_bytes": 32},
+                            "usage": {"cpu_millicores": 20, "memory_bytes": 8},
+                        },
+                        {
+                            "namespace": "logging",
+                            "requests": {"cpu_millicores": 100, "memory_bytes": 64},
+                            "limits": {"cpu_millicores": 200, "memory_bytes": 128},
+                            "usage": None,
+                        },
+                    ],
+                }
+            }
+        }
+
+        rows = _namespace_resources(record)
+
+        self.assertEqual([row["name"] for row in rows], ["empty", "logging", "payments"])
+        self.assertEqual(rows[0]["requests"], {"cpu_millicores": 0, "memory_bytes": 0})
+        self.assertEqual(rows[0]["limits"], {"cpu_millicores": 0, "memory_bytes": 0})
+        self.assertEqual(rows[0]["usage"], {"cpu_millicores": 0, "memory_bytes": 0})
+        self.assertEqual(rows[1]["usage"], None)
+        self.assertEqual(rows[2]["requests"], {"cpu_millicores": 525, "memory_bytes": 528})
+        self.assertEqual(rows[2]["limits"], {"cpu_millicores": 1050, "memory_bytes": 1056})
+        self.assertEqual(rows[2]["usage"], {"cpu_millicores": 320, "memory_bytes": 264})
+
+        record["payload"]["snapshot"]["metrics_available"] = False
+        self.assertEqual(_namespace_resources(record)[0]["usage"], None)
+
+    def test_dashboard_marks_namespace_usage_unavailable_when_a_workload_metric_is_missing(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        cluster = self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.save_snapshot(
+            datetime.now(UTC),
+            "v1.36.1",
+            {
+                "snapshot": {
+                    "metrics_available": True,
+                    "nodes": [],
+                    "namespaces": [{"name": "payments", "has_limit_range": True}],
+                    "workloads": [
+                        {
+                            "namespace": "payments",
+                            "kind": "Deployment",
+                            "name": "api",
+                            "replicas": 1,
+                            "requests": {"cpu_millicores": 100, "memory_bytes": 64},
+                            "limits": {"cpu_millicores": 200, "memory_bytes": 128},
+                            "usage": None,
+                        }
+                    ],
+                },
+                "findings": [],
+            },
+            cluster_id=cluster["id"],
+        )
+
+        dashboard = self.client.get("/")
+
+        self.assertIn("Namespace resources", dashboard.text)
+        self.assertIn("Unavailable", dashboard.text)
 
     def test_account_page_rejects_mismatched_passwords_and_invalid_csrf(self) -> None:
         login = self.client.get("/login")

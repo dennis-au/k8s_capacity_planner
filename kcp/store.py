@@ -518,8 +518,8 @@ class Store:
     def _validate_credentials(username: str, password: str) -> None:
         if not _USERNAME.fullmatch(username):
             raise ValueError("username must be 3-64 characters: letters, digits, '.', '_', or '-'")
-        if not 12 <= len(password) <= 1024:
-            raise ValueError("password must be between 12 and 1024 characters")
+        if not 1 <= len(password) <= 1024:
+            raise ValueError("password must be between 1 and 1024 characters")
 
     @staticmethod
     def _validate_cluster_connection(name: str, kubeconfig_file: str, kube_context: str, endpoint: str) -> None:
