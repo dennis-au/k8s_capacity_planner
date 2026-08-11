@@ -63,7 +63,6 @@ class ResourceTrendPoint:
 @dataclass(frozen=True)
 class ResourceTrend:
     summary: str
-    sample_count: int
     points: list[ResourceTrendPoint]
 
 
@@ -656,7 +655,7 @@ def _resource_trend(snapshots: Iterable[dict[str, Any]]) -> ResourceTrend:
         latest_at = collected_at if latest_at is None or collected_at > latest_at else latest_at
 
     if latest_at is None:
-        return ResourceTrend("Resource history unavailable: collect at least two snapshots.", 0, [])
+        return ResourceTrend("Resource history unavailable: collect at least two snapshots.", [])
     cutoff = latest_at - timedelta(days=30)
     by_time = {point.collected_at: point for point in extracted if point.collected_at >= cutoff}
     points = [by_time[timestamp] for timestamp in sorted(by_time)]
@@ -665,7 +664,7 @@ def _resource_trend(snapshots: Iterable[dict[str, Any]]) -> ResourceTrend:
         if len(points) >= 2
         else "Resource history unavailable: collect at least two snapshots."
     )
-    return ResourceTrend(summary, len(points), points)
+    return ResourceTrend(summary, points)
 
 
 def _historical_snapshot(item: dict[str, Any]) -> dict[str, Any]:

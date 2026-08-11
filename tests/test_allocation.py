@@ -280,7 +280,6 @@ class AllocationPlanTests(unittest.TestCase):
 
         plan = build_allocation_plan(newest, [newest, older], self.docs)
 
-        self.assertEqual(plan.resource_trend.sample_count, 2)
         self.assertEqual(plan.resource_trend.points[0].total_capacity, ResourceValues(cpu_millicores=1200, memory_bytes=1200))
         self.assertEqual(plan.resource_trend.points[0].requested, ResourceValues(cpu_millicores=100, memory_bytes=200))
         self.assertEqual(plan.resource_trend.points[0].limits, ResourceValues(cpu_millicores=300, memory_bytes=400))

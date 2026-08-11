@@ -173,6 +173,7 @@ def create_app(
             trend_charts=_trend_charts(plan),
             namespace_resources=namespace_resources,
             namespace_resource_total=_namespace_resource_total(namespace_resources),
+            namespace_resource_empty_message="No namespace data available.",
             connection=active_cluster,
         )
 
@@ -761,24 +762,17 @@ def _namespace_resources(record: dict | None) -> list[dict[str, Any]]:
 
 
 def _namespace_resource_total(rows: list[dict[str, Any]]) -> dict[str, dict[str, int] | None]:
-    total = {
-        "requests": {"cpu_millicores": 0, "memory_bytes": 0},
-        "limits": {"cpu_millicores": 0, "memory_bytes": 0},
-        "usage": {"cpu_millicores": 0, "memory_bytes": 0},
+    def total(resource: str) -> dict[str, int]:
+        return {
+            key: sum(row[resource][key] for row in rows)
+            for key in ("cpu_millicores", "memory_bytes")
+        }
+
+    return {
+        "requests": total("requests"),
+        "limits": total("limits"),
+        "usage": total("usage") if all(row["usage"] is not None for row in rows) else None,
     }
-    usage_complete = True
-    for row in rows:
-        for resource in ("requests", "limits"):
-            values = row[resource]
-            total[resource]["cpu_millicores"] += int(values["cpu_millicores"])
-            total[resource]["memory_bytes"] += int(values["memory_bytes"])
-        usage = row["usage"]
-        if usage is None:
-            usage_complete = False
-            continue
-        total["usage"]["cpu_millicores"] += int(usage["cpu_millicores"])
-        total["usage"]["memory_bytes"] += int(usage["memory_bytes"])
-    return {**total, "usage": total["usage"] if usage_complete else None}
 
 
 def _report_quality(record: dict[str, Any] | None, snapshot_interval_minutes: int) -> ReportQuality | None:
@@ -915,10 +909,6 @@ def _trend_charts(plan: Any) -> list[dict[str, Any]]:
             previous_missing = False
         return " ".join(segments)
 
-    def capacity_area(values: list[int], maximum: int) -> str:
-        path = chart_path(values, maximum)
-        return f"M0,94 {path[1:]} L100,94 Z" if path else ""
-
     def date_label(value: datetime) -> str:
         return value.strftime("%b %d").replace(" 0", " ")
 
@@ -933,13 +923,14 @@ def _trend_charts(plan: Any) -> list[dict[str, Any]]:
         limits = [getattr(point.limits, attribute) for point in points]
         usage = [getattr(point.usage, attribute) if point.usage is not None else None for point in points]
         maximum = max([*capacities, *requests, *limits, *(value for value in usage if value is not None), 1])
+        capacity_path = chart_path(capacities, maximum)
         latest = points[-1]
         latest_capacity = getattr(latest.total_capacity, attribute) if latest.total_capacity is not None else 0
         latest_usage = getattr(latest.usage, attribute) if latest.usage is not None else None
         charts.append(
             {
                 "resource": resource,
-                "capacity_area": capacity_area(capacities, maximum),
+                "capacity_area": f"M0,94 {capacity_path[1:]} L100,94 Z",
                 "request_path": chart_path(requests, maximum),
                 "limit_path": chart_path(limits, maximum),
                 "usage_path": chart_path(usage, maximum),
@@ -1077,6 +1068,9 @@ def _resource_text(resources: Any | None) -> str:
     )
 
 
+_NAMESPACE_RESOURCE_TABLE_TEMPLATE = """<div class="table-wrap"><table><thead><tr><th>Namespace</th><th>Requests</th><th>Limits</th><th>Actual used</th></tr></thead><tbody>{% for namespace in namespace_resources %}<tr><td>{{ namespace.name }}</td><td><span class="resource-pair">CPU {{ format_cpu(namespace.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.limits.memory_bytes) }}</span></td><td>{% if namespace.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr>{% else %}<tr><td colspan="4">{{ namespace_resource_empty_message }}</td></tr>{% endfor %}</tbody><tfoot><tr><th scope="row">All namespaces</th><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.limits.memory_bytes) }}</span></td><td>{% if namespace_resource_total.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr></tfoot></table></div>"""
+
+
 def _html_export(record: dict[str, Any], plan: Any, quality: ReportQuality | None) -> str:
     namespace_resources = _namespace_resources(record)
     return render_template_string(
@@ -1087,6 +1081,7 @@ def _html_export(record: dict[str, Any], plan: Any, quality: ReportQuality | Non
         capacity_charts=_capacity_charts(plan),
         namespace_resources=namespace_resources,
         namespace_resource_total=_namespace_resource_total(namespace_resources),
+        namespace_resource_empty_message="No namespace data was recorded in this snapshot.",
         format_cpu=_format_cpu,
         format_cpu_raw=_format_cpu_raw,
         format_bytes=_format_bytes,
@@ -1175,7 +1170,7 @@ _HTML_EXPORT_TEMPLATE = """<!doctype html>
 
   <section class="dashboard-card">
     <header class="card-header"><p class="eyebrow">Resource allocation</p><h2>Namespace resources</h2><p>Declared requests, limits, and observed CPU and memory usage from this snapshot.</p></header>
-    <div class="table-wrap"><table><thead><tr><th>Namespace</th><th>Requests</th><th>Limits</th><th>Actual used</th></tr></thead><tbody>{% for namespace in namespace_resources %}<tr><td>{{ namespace.name }}</td><td><span class="resource-pair">CPU {{ format_cpu(namespace.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.limits.memory_bytes) }}</span></td><td>{% if namespace.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr>{% else %}<tr><td colspan="4">No namespace data was recorded in this snapshot.</td></tr>{% endfor %}</tbody><tfoot><tr><th scope="row">All namespaces</th><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.limits.memory_bytes) }}</span></td><td>{% if namespace_resource_total.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr></tfoot></table></div>
+""" + _NAMESPACE_RESOURCE_TABLE_TEMPLATE + """
   </section>
 
   <section class="dashboard-card">
@@ -1276,7 +1271,7 @@ _DASHBOARD_TEMPLATE = """
 
     <section class="capacity-chart-panel namespace-resource-panel" aria-labelledby="namespace-resources-title">
       <header class="capacity-chart-heading"><div><p class="eyebrow">Resource allocation</p><h2 id="namespace-resources-title">Namespace resources</h2><p>Declared requests, limits, and observed CPU and memory usage from the latest snapshot.</p></div></header>
-      <div class="table-wrap"><table><thead><tr><th>Namespace</th><th>Requests</th><th>Limits</th><th>Actual used</th></tr></thead><tbody>{% for namespace in namespace_resources %}<tr><td>{{ namespace.name }}</td><td><span class="resource-pair">CPU {{ format_cpu(namespace.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.limits.memory_bytes) }}</span></td><td>{% if namespace.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr>{% else %}<tr><td colspan="4">No namespace data available.</td></tr>{% endfor %}</tbody><tfoot><tr><th scope="row">All namespaces</th><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.requests.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.requests.memory_bytes) }}</span></td><td><span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.limits.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.limits.memory_bytes) }}</span></td><td>{% if namespace_resource_total.usage is not none %}<span class="resource-pair">CPU {{ format_cpu(namespace_resource_total.usage.cpu_millicores) }}</span><span class="resource-pair">Memory {{ format_bytes(namespace_resource_total.usage.memory_bytes) }}</span>{% else %}Unavailable{% endif %}</td></tr></tfoot></table></div>
+""" + _NAMESPACE_RESOURCE_TABLE_TEMPLATE + """
     </section>
   </div>
 {% endif %}

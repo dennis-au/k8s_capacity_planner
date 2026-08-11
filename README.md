@@ -27,7 +27,7 @@ python -m kcp docs-sync \
 Build the OCI image:
 
 ```sh
-docker build -t kcp:0.1.14 .
+docker build -t kcp:0.1.15 .
 ```
 
 ## Cluster Access
@@ -43,16 +43,16 @@ Create a kubeconfig that references the read-only identity and cluster CA, then 
 
 ## Dark-site Run
 
-For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.14` release, verify its checksum, and load it directly:
+For a Docker-only dark site, download the architecture-specific Docker archive from the `v0.1.15` release, verify its checksum, and load it directly:
 
 ```sh
 # x86_64 host
-sha256sum -c kcp-0.1.14-linux-amd64.docker.tar.sha256
-docker load --input kcp-0.1.14-linux-amd64.docker.tar
+sha256sum -c kcp-0.1.15-linux-amd64.docker.tar.sha256
+docker load --input kcp-0.1.15-linux-amd64.docker.tar
 
 # ARM64 host
-sha256sum -c kcp-0.1.14-linux-arm64.docker.tar.sha256
-docker load --input kcp-0.1.14-linux-arm64.docker.tar
+sha256sum -c kcp-0.1.15-linux-arm64.docker.tar.sha256
+docker load --input kcp-0.1.15-linux-arm64.docker.tar
 ```
 
 Prepare these files on the dashboard host:
@@ -79,7 +79,7 @@ docker run --detach --name kcp --restart unless-stopped \
   --env KCP_TLS_KEY_FILE=/run/kcp/tls.key \
   --env KCP_ADMIN_USERNAME=admin \
   --env KCP_ADMIN_PASSWORD_FILE=/run/kcp/admin-password \
-  kcp:0.1.14
+  kcp:0.1.15
 ```
 
 The password file is only used to create the first administrator. Reset it deliberately:
@@ -90,7 +90,7 @@ docker run --rm \
   --volume /srv/kcp/new-admin-password:/run/kcp/new-admin-password:ro \
   --env KCP_DB_PATH=/var/lib/kcp/kcp.sqlite3 \
   --env KCP_ADMIN_USERNAME=admin \
-  --entrypoint python kcp:0.1.14 \
+  --entrypoint python kcp:0.1.15 \
   -m kcp admin reset-password --password-file /run/kcp/new-admin-password
 ```
 
@@ -103,7 +103,7 @@ The image includes `kubectl v1.36.0` for a read-only connection check using the 
 ```sh
 docker run --rm \
   --volume /srv/kcp/clusters:/run/kcp/clusters:ro \
-  --entrypoint kubectl kcp:0.1.14 \
+  --entrypoint kubectl kcp:0.1.15 \
   --kubeconfig /run/kcp/clusters/production.kubeconfig \
   version --request-timeout=10s
 ```
@@ -113,7 +113,7 @@ Add `--context <context-name>` when the kubeconfig does not use the intended con
 For basic network reachability diagnostics, the image also includes `ping`:
 
 ```sh
-docker run --rm --entrypoint ping kcp:0.1.14 -c 3 <kubernetes-api-host-or-ip>
+docker run --rm --entrypoint ping kcp:0.1.15 -c 3 <kubernetes-api-host-or-ip>
 ```
 
 ICMP reachability does not prove Kubernetes API access; use the `kubectl version` command above for that check.
