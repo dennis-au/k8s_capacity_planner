@@ -169,9 +169,14 @@ def build_allocation_plan(
     historical_snapshots: Iterable[dict[str, Any]],
     docs: DocumentRegistry,
     planning_reserve_percent: int = 20,
+    exclude_control_plane: bool = False,
 ) -> AllocationPlan:
     if not 0 <= planning_reserve_percent <= 50:
         raise ValueError("planning reserve must be between 0 and 50 percent")
+    history = list(historical_snapshots)
+    if exclude_control_plane:
+        snapshot = _without_control_plane(snapshot)
+        history = [_without_control_plane(item) for item in history]
     nodes = [_allocation_node(node, planning_reserve_percent) for node in snapshot.get("nodes", [])]
     total_allocatable = _sum_resources(node.allocatable for node in nodes)
     total_node_capacity = _total_node_capacity(nodes)
@@ -191,7 +196,6 @@ def build_allocation_plan(
     total_observed_usage = _sum_resources(node.usage for node in nodes)
     total_remaining = _sum_resources(node.remaining for node in nodes)
     total_planning_safe = _sum_resources(node.planning_safe for node in nodes if node.eligible)
-    history = list(historical_snapshots)
     observed_peaks, metric_snapshot_count = _observed_peaks(history)
 
     recommendations = [
@@ -218,6 +222,16 @@ def build_allocation_plan(
         capacity_source=docs.source_for_rule("node-headroom"),
         rolling_update_capacity=rolling_update_capacity,
     )
+
+
+def _without_control_plane(snapshot: dict[str, Any]) -> dict[str, Any]:
+    nodes = snapshot.get("nodes")
+    if not isinstance(nodes, list):
+        return snapshot
+    return {
+        **snapshot,
+        "nodes": [node for node in nodes if isinstance(node, dict) and not node.get("control_plane", False)],
+    }
 
 
 def build_management_decision(

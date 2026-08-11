@@ -162,6 +162,7 @@ def create_app(
             active_cluster["id"] if active_cluster else None,
             int(runtime_settings["planning_reserve_percent"]),
             include_history=True,
+            exclude_control_plane=True,
         )
         namespace_resources = _namespace_resources(record)
         return _render(
@@ -549,6 +550,7 @@ def _allocation_plan(
     cluster_id: int | None,
     planning_reserve_percent: int,
     include_history: bool = False,
+    exclude_control_plane: bool = False,
 ) -> Any | None:
     if record is None or cluster_id is None:
         return None
@@ -558,6 +560,7 @@ def _allocation_plan(
         [snapshot["payload"]["snapshot"] for snapshot in history],
         docs,
         planning_reserve_percent=planning_reserve_percent,
+        exclude_control_plane=exclude_control_plane,
     )
 
 
@@ -1210,12 +1213,12 @@ _BASE_TEMPLATE = """<!doctype html>
 <details class="nav-menu manage-menu" {% if current_path in ['/settings', '/account'] %}open{% endif %}><summary>Manage</summary><div><a class="{% if current_path == '/settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a><a class="{% if current_path == '/account' %}active{% endif %}" href="{{ url_for('account') }}">Account</a></div></details>
 </aside><section class="workspace"><header class="workspace-header"><div class="workspace-context"><span>Active cluster</span><strong>{{ active_cluster.name if active_cluster else 'Not configured' }}</strong></div><div class="workspace-actions">{% if clusters %}<form class="cluster-switcher" method="post" action="{{ url_for('activate_cluster') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ current_path }}"><label for="active-cluster">Active cluster</label><select id="active-cluster" name="cluster_id">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if active_cluster and cluster.id == active_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select><button class="quiet" type="submit">Use</button></form>{% endif %}<form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="quiet" type="submit">Sign out</button></form></div></header>
 {% endif %}
-<main class="page"><div class="page-heading"><div><p class="eyebrow">{{ active_cluster.name if active_cluster else 'Dark-site operation' }}</p><h1>{{ title }}</h1></div>{% if show_refresh %}<form method="post" action="{{ url_for('collect') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Refresh</button></form>{% endif %}</div>
+<main class="page"><div class="page-heading"><div>{% if active_cluster %}<p class="eyebrow">{{ active_cluster.name }}</p>{% endif %}<h1>{{ title }}</h1></div>{% if show_refresh %}<form method="post" action="{{ url_for('collect') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Refresh</button></form>{% endif %}</div>
 {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ category }}">{{ message }}</p>{% endfor %}{% endwith %}
 {{ content }}
 """
 
-_LOGIN_TEMPLATE = """<section class="login-panel"><p class="eyebrow">Dark-site operation</p><h1>K8S Capacity Planner</h1><p>Sign in to review the configured Kubernetes endpoint.</p><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Administrator<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section>"""
+_LOGIN_TEMPLATE = """<section class="login-panel"><h1>K8S Capacity Planner</h1><p>Sign in to review the configured Kubernetes endpoint.</p><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Administrator<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section>"""
 
 _ACCOUNT_TEMPLATE = """<div class="account-layout"><section class="account-summary"><p class="eyebrow">Local administrator</p><h2>Administrator account</h2><dl><dt>Username</dt><dd>{{ username }}</dd><dt>Authentication</dt><dd>Local password</dd></dl></section><section class="account-form"><p class="eyebrow">Password</p><h2>Change password</h2><form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="new-password">New password<input id="new-password" name="new_password" type="password" autocomplete="new-password" maxlength="1024" required></label><label for="confirm-password">Confirm new password<input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" maxlength="1024" required></label><button type="submit">Update password</button></form></section></div>"""
 
@@ -1259,9 +1262,9 @@ _DASHBOARD_TEMPLATE = """
 {% else %}
   <div class="overview-dashboard">
     <section class="capacity-chart-panel" aria-labelledby="capacity-composition-title">
-      <header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From total resources to raw remaining capacity</h2><p>Total node capacity, Kubernetes allocatable capacity, declared Pod requests, and raw remaining capacity from the latest snapshot.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>
-      {% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total node capacity</small></div><div class="capacity-chart-outcome"><span>Raw remaining</span><strong>{{ chart.remaining_display }}</strong><small>{{ chart.remaining_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition"><title>{{ chart.resource }} capacity composition</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect Node Capacity and render the capacity flow.</p>{% endif %}
-      <p class="capacity-chart-note"><strong>Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Raw remaining</strong> is Node Allocatable minus scheduled Pod requests. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p>
+      <header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From worker-node resources to raw remaining capacity</h2><p>Worker-node capacity, Kubernetes allocatable capacity, declared Pod requests, and raw remaining capacity from the latest snapshot.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>
+      {% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total worker-node capacity</small></div><div class="capacity-chart-outcome"><span>Raw remaining</span><strong>{{ chart.remaining_display }}</strong><small>{{ chart.remaining_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition"><title>{{ chart.resource }} capacity composition</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect worker-node capacity and render the capacity flow.</p>{% endif %}
+      <p class="capacity-chart-note"><strong>Worker Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Raw remaining</strong> is Worker Node Allocatable minus scheduled Pod requests. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p>
     </section>
 
     <section class="trend-panel" aria-labelledby="capacity-trend-title">

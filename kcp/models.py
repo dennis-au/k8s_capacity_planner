@@ -86,6 +86,7 @@ class NodeSummary:
     schedulable: bool = True
     usage: ResourceValues = field(default_factory=ResourceValues)
     conditions: list[str] = field(default_factory=list)
+    control_plane: bool = False
 
 
 @dataclass(frozen=True)

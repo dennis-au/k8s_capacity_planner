@@ -30,6 +30,16 @@ class _Collector:
                     allocatable=ResourceValues(cpu_millicores=2000, memory_bytes=2 * 1024**3),
                     requested=ResourceValues(cpu_millicores=500, memory_bytes=512 * 1024**2),
                     limits=ResourceValues(cpu_millicores=1000, memory_bytes=1024 * 1024**2),
+                    usage=ResourceValues(cpu_millicores=300, memory_bytes=256 * 1024**2),
+                ),
+                NodeSummary(
+                    name="control-plane-a",
+                    capacity=ResourceValues(cpu_millicores=1000, memory_bytes=1024**3),
+                    allocatable=ResourceValues(cpu_millicores=800, memory_bytes=768 * 1024**2),
+                    requested=ResourceValues(cpu_millicores=600, memory_bytes=512 * 1024**2),
+                    limits=ResourceValues(cpu_millicores=700, memory_bytes=768 * 1024**2),
+                    usage=ResourceValues(cpu_millicores=500, memory_bytes=384 * 1024**2),
+                    control_plane=True,
                 )
             ],
             namespaces=[
@@ -174,17 +184,18 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("Capacity Available", collected.text)
         self.assertIn("Raw remaining", collected.text)
         self.assertIn('class="overview-dashboard"', collected.text)
-        self.assertIn("Node Allocatable", collected.text)
-        self.assertIn("Total node capacity", collected.text)
+        self.assertIn("Worker Node Allocatable", collected.text)
+        self.assertIn("total worker-node capacity", collected.text)
         self.assertIn("Not allocatable to Pods", collected.text)
         self.assertIn('class="capacity-chart-panel"', collected.text)
-        self.assertIn("From total resources to raw remaining capacity", collected.text)
+        self.assertIn("From worker-node resources to raw remaining capacity", collected.text)
         self.assertIn("Scheduled requests", collected.text)
         self.assertIn("Raw remaining", collected.text)
         self.assertIn('aria-label="CPU capacity composition"', collected.text)
         self.assertIn('aria-label="Memory capacity composition"', collected.text)
         self.assertIn("2,500m", collected.text)
         self.assertIn("3,221,225,472 B", collected.text)
+        self.assertNotIn("3,500m", collected.text)
         self.assertIn('href="/docs/node-allocatable"', collected.text)
         self.assertIn("namespace-resource-panel", collected.text)
         self.assertIn("Namespace resources", collected.text)
@@ -1002,7 +1013,7 @@ class DashboardTests(unittest.TestCase):
         self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
 
         dashboard = self.client.get("/")
-        self.assertIn("From total resources to raw remaining capacity", dashboard.text)
+        self.assertIn("From worker-node resources to raw remaining capacity", dashboard.text)
         self.assertIn("Raw remaining", dashboard.text)
         self.assertNotIn("Next action", dashboard.text)
         self.assertNotIn("Management follow-up", dashboard.text)
@@ -1039,7 +1050,7 @@ class DashboardTests(unittest.TestCase):
 
         overview = self.client.get("/")
         self.assertIn("Capacity flow", overview.text)
-        self.assertIn("Take a new snapshot to collect Node Capacity", overview.text)
+        self.assertIn("Take a new snapshot to collect worker-node capacity", overview.text)
         self.assertNotIn("Report stale", overview.text)
         self.assertNotIn("Collection limitations", overview.text)
         self.assertNotIn("Metrics API unavailable", overview.text)
@@ -1091,8 +1102,8 @@ class DashboardTests(unittest.TestCase):
 
         management = json.loads(export_json.text)["management_capacity"]
         self.assertEqual(management["decision"]["state"], "Capacity Available")
-        self.assertEqual(management["capacity_flow"]["total_node_capacity"]["cpu_millicores"], 2_500)
-        self.assertEqual(management["capacity_flow"]["scheduled_requests"]["cpu_millicores"], 500)
+        self.assertEqual(management["capacity_flow"]["total_node_capacity"]["cpu_millicores"], 3_500)
+        self.assertEqual(management["capacity_flow"]["scheduled_requests"]["cpu_millicores"], 1_100)
         self.assertEqual(management["source"]["document_id"], "node-allocatable")
         self.assertIn("Capacity Planner policy", export_markdown.text)
         self.assertIn("Management decision: Capacity Available", export_markdown.text)

@@ -288,6 +288,49 @@ class AllocationPlanTests(unittest.TestCase):
         self.assertEqual(plan.resource_trend.points[1].limits, ResourceValues(cpu_millicores=700, memory_bytes=800))
         self.assertEqual(plan.resource_trend.points[1].usage, ResourceValues(cpu_millicores=250, memory_bytes=350))
 
+    def test_dashboard_plan_can_exclude_control_plane_capacity_and_history(self) -> None:
+        collected_at = datetime(2026, 8, 7, tzinfo=UTC)
+        current = {
+            "collected_at": collected_at.isoformat(),
+            "metrics_available": True,
+            "nodes": [
+                {
+                    "name": "control-plane-a",
+                    "control_plane": True,
+                    "capacity": {"cpu_millicores": 2000, "memory_bytes": 2000},
+                    "allocatable": {"cpu_millicores": 1500, "memory_bytes": 1500},
+                    "requested": {"cpu_millicores": 900, "memory_bytes": 900},
+                    "limits": {"cpu_millicores": 1200, "memory_bytes": 1200},
+                    "usage": {"cpu_millicores": 700, "memory_bytes": 700},
+                    "conditions": [],
+                },
+                {
+                    "name": "worker-a",
+                    "capacity": {"cpu_millicores": 4000, "memory_bytes": 4000},
+                    "allocatable": {"cpu_millicores": 3500, "memory_bytes": 3500},
+                    "requested": {"cpu_millicores": 1000, "memory_bytes": 1000},
+                    "limits": {"cpu_millicores": 2000, "memory_bytes": 2000},
+                    "usage": {"cpu_millicores": 800, "memory_bytes": 800},
+                    "conditions": [],
+                },
+            ],
+            "workloads": [],
+        }
+        older = {
+            **current,
+            "collected_at": (collected_at - timedelta(days=1)).isoformat(),
+        }
+
+        full_plan = build_allocation_plan(current, [older], self.docs)
+        dashboard_plan = build_allocation_plan(current, [older], self.docs, exclude_control_plane=True)
+
+        self.assertEqual(full_plan.total_node_capacity.cpu_millicores, 6000)
+        self.assertEqual(dashboard_plan.total_node_capacity.cpu_millicores, 4000)
+        self.assertEqual(dashboard_plan.total_requested.cpu_millicores, 1000)
+        self.assertEqual(dashboard_plan.total_observed_usage.cpu_millicores, 800)
+        self.assertEqual(dashboard_plan.resource_trend.points[0].limits.cpu_millicores, 2000)
+        self.assertEqual(dashboard_plan.resource_trend.points[1].usage.cpu_millicores, 800)
+
     def test_deployment_approval_reports_capacity_gaps_and_per_pod_fit(self) -> None:
         snapshot = {
             "metrics_available": False,

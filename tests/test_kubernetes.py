@@ -9,6 +9,7 @@ from kubernetes import client
 
 from kcp.kubernetes import (
     _namespace_summaries,
+    _is_control_plane,
     _node_ready,
     KubernetesCollector,
     inspect_kubeconfig,
@@ -19,6 +20,11 @@ from kcp.kubernetes import (
 
 
 class KubernetesNormalizationTests(unittest.TestCase):
+    def test_control_plane_labels_include_current_and_legacy_markers(self) -> None:
+        self.assertTrue(_is_control_plane({"node-role.kubernetes.io/control-plane": ""}))
+        self.assertTrue(_is_control_plane({"node-role.kubernetes.io/master": ""}))
+        self.assertFalse(_is_control_plane({"kubernetes.io/arch": "amd64"}))
+
     def test_pod_resources_use_regular_sum_init_max_and_overhead(self) -> None:
         pod = client.V1Pod(
             spec=client.V1PodSpec(
@@ -152,7 +158,9 @@ class KubernetesNormalizationTests(unittest.TestCase):
         collector.autoscaling = Mock()
         collector.custom = Mock()
         node = client.V1Node(
-            metadata=client.V1ObjectMeta(name="worker-a"),
+            metadata=client.V1ObjectMeta(
+                name="control-plane-a", labels={"node-role.kubernetes.io/control-plane": ""}
+            ),
             spec=client.V1NodeSpec(),
             status=client.V1NodeStatus(
                 capacity={"cpu": "2500m", "memory": "3Gi"},
@@ -181,6 +189,7 @@ class KubernetesNormalizationTests(unittest.TestCase):
         self.assertEqual(snapshot.nodes[0].capacity.cpu_millicores, 2500)
         self.assertEqual(snapshot.nodes[0].capacity.memory_bytes, 3 * 1024**3)
         self.assertEqual(snapshot.nodes[0].allocatable.cpu_millicores, 2000)
+        self.assertTrue(snapshot.nodes[0].control_plane)
         self.assertEqual(snapshot.namespaces[0].quotas["pods"].used, 1000)
         self.assertEqual(snapshot.namespaces[0].quotas["pods"].hard, 2000)
         for api in (collector.core, collector.apps, collector.autoscaling, collector.custom):

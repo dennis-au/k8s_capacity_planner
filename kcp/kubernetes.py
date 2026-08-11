@@ -23,6 +23,9 @@ from kcp.models import (
 )
 
 
+_CONTROL_PLANE_LABELS = ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master")
+
+
 @dataclass(frozen=True)
 class KubeconfigDetails:
     context: str
@@ -135,6 +138,7 @@ class KubernetesCollector:
                     if str(condition.status).lower() == "true"
                     and condition.type in {"MemoryPressure", "DiskPressure", "PIDPressure"}
                 ],
+                control_plane=_is_control_plane(node.metadata.labels),
             )
             for node in nodes
         ]
@@ -158,6 +162,10 @@ class KubernetesCollector:
     def test_connection(self) -> str:
         version = self.version.get_code(_request_timeout=10)
         return str(version.git_version or "unknown Kubernetes version")
+
+
+def _is_control_plane(labels: dict[str, str] | None) -> bool:
+    return any(label in (labels or {}) for label in _CONTROL_PLANE_LABELS)
 
 
 def inspect_kubeconfig(
