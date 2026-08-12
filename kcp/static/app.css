@@ -893,7 +893,9 @@ td { border-color: var(--line); }
 tbody tr:hover { background: #fbfcff; }
 .badge { border-radius: 999px; }
 
-.login-panel { border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: 0 18px 45px rgba(40, 63, 114, 0.1); }
+.login-page { display: grid; align-content: center; min-height: 100vh; min-height: 100svh; max-width: 476px; margin: 0 auto; padding: 24px; }
+.login-panel { width: 100%; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: 0 18px 45px rgba(40, 63, 114, 0.1); }
+.login-notice { width: 100%; margin: 0 0 16px; }
 .empty { overflow: hidden; }
 .empty-details,
 .connection-form,
@@ -933,6 +935,7 @@ tbody tr:hover { background: #fbfcff; }
   .cluster-switcher { flex: 1; }
   .cluster-switcher select { min-width: 0; }
   .page { padding: 22px 16px 40px; }
+  .login-page { min-height: 100svh; padding: 16px; }
   .page-heading h1 { font-size: 25px; }
   .dashboard-decision { grid-template-columns: 1fr; gap: 18px; padding: 20px; }
   .dashboard-decision-meta { padding: 16px 0 0; border-top: 1px solid var(--line); border-left: 0; }
@@ -945,4 +948,8 @@ tbody tr:hover { background: #fbfcff; }
   .capacity-chart,
   .resource-dashboard-card header,
   .dashboard-context-grid > article { padding-right: 18px; padding-left: 18px; }
+}
+
+@media (max-height: 480px) and (orientation: landscape) {
+  .login-page { align-content: start; padding-top: 16px; padding-bottom: 16px; }
 }

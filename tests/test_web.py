@@ -108,6 +108,9 @@ class DashboardTests(unittest.TestCase):
     def test_login_collect_export_and_local_docs(self) -> None:
         self.assertEqual(self.client.get("/").status_code, 302)
         login = self.client.get("/login")
+        self.assertIn('class="page login-page"', login.text)
+        self.assertIn('class="login-panel"', login.text)
+        self.assertNotIn('class="page-heading"', login.text)
         csrf = _csrf(login.text)
         response = self.client.post(
             "/login",
