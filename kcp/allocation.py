@@ -55,6 +55,7 @@ class CapacityTrend:
 class ResourceTrendPoint:
     collected_at: datetime
     total_capacity: ResourceValues | None
+    allocatable_after_reserve: ResourceValues
     requested: ResourceValues
     limits: ResourceValues
     usage: ResourceValues | None
@@ -148,6 +149,7 @@ class AllocationPlan:
     total_node_capacity: ResourceValues | None
     total_not_allocatable: ResourceValues | None
     total_allocatable: ResourceValues
+    total_allocatable_after_reserve: ResourceValues
     total_requested: ResourceValues
     total_observed_usage: ResourceValues
     total_remaining: ResourceValues
@@ -179,6 +181,7 @@ def build_allocation_plan(
         history = [_without_control_plane(item) for item in history]
     nodes = [_allocation_node(node, planning_reserve_percent) for node in snapshot.get("nodes", [])]
     total_allocatable = _sum_resources(node.allocatable for node in nodes)
+    total_allocatable_after_reserve = _after_reserve(total_allocatable, planning_reserve_percent)
     total_node_capacity = _total_node_capacity(nodes)
     total_not_allocatable = (
         ResourceValues(
@@ -207,6 +210,7 @@ def build_allocation_plan(
         total_node_capacity=total_node_capacity,
         total_not_allocatable=total_not_allocatable,
         total_allocatable=total_allocatable,
+        total_allocatable_after_reserve=total_allocatable_after_reserve,
         total_requested=total_requested,
         total_observed_usage=total_observed_usage,
         total_remaining=total_remaining,
@@ -218,7 +222,7 @@ def build_allocation_plan(
         eligible_node_count=sum(1 for node in nodes if node.eligible),
         capacity_status=_capacity_status(nodes, total_remaining, total_planning_safe, snapshot.get("metrics_available") is True),
         trend=_capacity_trend([snapshot, *history], planning_reserve_percent),
-        resource_trend=_resource_trend([snapshot, *history]),
+        resource_trend=_resource_trend([snapshot, *history], planning_reserve_percent),
         capacity_source=docs.source_for_rule("node-headroom"),
         rolling_update_capacity=rolling_update_capacity,
     )
@@ -355,13 +359,29 @@ def _total_node_capacity(nodes: list[AllocationNode]) -> ResourceValues | None:
 
 
 def _planning_safe(remaining: ResourceValues, allocatable: ResourceValues, planning_reserve_percent: int) -> ResourceValues:
+    reserve = _reserve(allocatable, planning_reserve_percent)
+    return ResourceValues(
+        cpu_millicores=max(0, remaining.cpu_millicores - reserve.cpu_millicores),
+        memory_bytes=max(0, remaining.memory_bytes - reserve.memory_bytes),
+        ephemeral_storage_bytes=max(0, remaining.ephemeral_storage_bytes - reserve.ephemeral_storage_bytes),
+    )
+
+
+def _after_reserve(resources: ResourceValues, planning_reserve_percent: int) -> ResourceValues:
+    reserve = _reserve(resources, planning_reserve_percent)
+    return ResourceValues(
+        cpu_millicores=max(0, resources.cpu_millicores - reserve.cpu_millicores),
+        memory_bytes=max(0, resources.memory_bytes - reserve.memory_bytes),
+        ephemeral_storage_bytes=max(0, resources.ephemeral_storage_bytes - reserve.ephemeral_storage_bytes),
+    )
+
+
+def _reserve(resources: ResourceValues, planning_reserve_percent: int) -> ResourceValues:
     reserve = lambda value: math.ceil(value * planning_reserve_percent / 100)
     return ResourceValues(
-        cpu_millicores=max(0, remaining.cpu_millicores - reserve(allocatable.cpu_millicores)),
-        memory_bytes=max(0, remaining.memory_bytes - reserve(allocatable.memory_bytes)),
-        ephemeral_storage_bytes=max(
-            0, remaining.ephemeral_storage_bytes - reserve(allocatable.ephemeral_storage_bytes)
-        ),
+        cpu_millicores=reserve(resources.cpu_millicores),
+        memory_bytes=reserve(resources.memory_bytes),
+        ephemeral_storage_bytes=reserve(resources.ephemeral_storage_bytes),
     )
 
 
@@ -641,7 +661,7 @@ def _trend_points(
     return [by_time[timestamp] for timestamp in sorted(by_time)]
 
 
-def _resource_trend(snapshots: Iterable[dict[str, Any]]) -> ResourceTrend:
+def _resource_trend(snapshots: Iterable[dict[str, Any]], planning_reserve_percent: int) -> ResourceTrend:
     latest_at: datetime | None = None
     extracted: list[ResourceTrendPoint] = []
     for item in snapshots:
@@ -656,11 +676,13 @@ def _resource_trend(snapshots: Iterable[dict[str, Any]]) -> ResourceTrend:
             if nodes and all(isinstance(capacity, dict) for capacity in capacities)
             else None
         )
+        total_allocatable = _sum_resources(_resources(node.get("allocatable")) for node in nodes)
         usage_available = snapshot.get("metrics_available") is True and all("usage" in node for node in nodes)
         extracted.append(
             ResourceTrendPoint(
                 collected_at=collected_at,
                 total_capacity=total_capacity,
+                allocatable_after_reserve=_after_reserve(total_allocatable, planning_reserve_percent),
                 requested=_sum_resources(_resources(node.get("requested")) for node in nodes),
                 limits=_sum_resources(_resources(node.get("limits")) for node in nodes),
                 usage=_sum_resources(_resources(node.get("usage")) for node in nodes) if usage_available else None,

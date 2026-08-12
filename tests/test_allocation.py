@@ -281,6 +281,10 @@ class AllocationPlanTests(unittest.TestCase):
         plan = build_allocation_plan(newest, [newest, older], self.docs)
 
         self.assertEqual(plan.resource_trend.points[0].total_capacity, ResourceValues(cpu_millicores=1200, memory_bytes=1200))
+        self.assertEqual(
+            plan.resource_trend.points[0].allocatable_after_reserve,
+            ResourceValues(cpu_millicores=800, memory_bytes=800),
+        )
         self.assertEqual(plan.resource_trend.points[0].requested, ResourceValues(cpu_millicores=100, memory_bytes=200))
         self.assertEqual(plan.resource_trend.points[0].limits, ResourceValues(cpu_millicores=300, memory_bytes=400))
         self.assertIsNone(plan.resource_trend.points[0].usage)
@@ -326,6 +330,7 @@ class AllocationPlanTests(unittest.TestCase):
 
         self.assertEqual(full_plan.total_node_capacity.cpu_millicores, 6000)
         self.assertEqual(dashboard_plan.total_node_capacity.cpu_millicores, 4000)
+        self.assertEqual(dashboard_plan.resource_trend.points[0].allocatable_after_reserve.cpu_millicores, 2800)
         self.assertEqual(dashboard_plan.total_requested.cpu_millicores, 1000)
         self.assertEqual(dashboard_plan.total_observed_usage.cpu_millicores, 800)
         self.assertEqual(dashboard_plan.resource_trend.points[0].limits.cpu_millicores, 2000)

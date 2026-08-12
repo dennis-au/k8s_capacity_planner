@@ -170,7 +170,7 @@ def create_app(
             _DASHBOARD_PAGE_TEMPLATE,
             record=record,
             plan=plan,
-            capacity_charts=_capacity_charts(plan),
+            capacity_charts=_capacity_charts(plan, after_reserve=True),
             trend_charts=_trend_charts(plan),
             namespace_resources=namespace_resources,
             namespace_resource_total=_namespace_resource_total(namespace_resources),
@@ -822,44 +822,37 @@ def _format_percent(value: float) -> str:
     return f"{value:.0%}"
 
 
-def _capacity_charts(plan: Any) -> list[dict[str, Any]]:
-    if plan is None or plan.total_node_capacity is None or plan.total_not_allocatable is None:
+def _capacity_charts(plan: Any, after_reserve: bool = False) -> list[dict[str, Any]]:
+    if plan is None or (not after_reserve and (plan.total_node_capacity is None or plan.total_not_allocatable is None)):
         return []
 
     resources = (
-        (
-            "CPU",
-            plan.total_node_capacity.cpu_millicores,
-            plan.total_not_allocatable.cpu_millicores,
-            plan.total_requested.cpu_millicores,
-            plan.total_remaining.cpu_millicores,
-            _format_cpu,
-            _format_cpu_raw,
-        ),
-        (
-            "Memory",
-            plan.total_node_capacity.memory_bytes,
-            plan.total_not_allocatable.memory_bytes,
-            plan.total_requested.memory_bytes,
-            plan.total_remaining.memory_bytes,
-            _format_bytes,
-            _format_bytes_raw,
-        ),
+        ("CPU", "cpu_millicores", _format_cpu, _format_cpu_raw),
+        ("Memory", "memory_bytes", _format_bytes, _format_bytes_raw),
     )
     charts = []
-    for resource, total, not_allocatable, requested, raw_remaining, format_value, format_raw in resources:
+    for resource, attribute, format_value, format_raw in resources:
+        if after_reserve:
+            total = getattr(plan.total_allocatable_after_reserve, attribute)
+            requested = min(total, max(0, getattr(plan.total_requested, attribute)))
+            remaining = total - requested
+            values = (
+                ("Scheduled requests", "requested", requested),
+                ("Remaining after reserve", "remaining", remaining),
+            )
+        else:
+            total = getattr(plan.total_node_capacity, attribute)
+            not_allocatable = min(total, max(0, getattr(plan.total_not_allocatable, attribute)))
+            allocatable = total - not_allocatable
+            requested = min(allocatable, max(0, getattr(plan.total_requested, attribute)))
+            remaining = min(allocatable - requested, max(0, getattr(plan.total_remaining, attribute)))
+            values = (
+                ("Not allocatable to Pods", "not-allocatable", not_allocatable),
+                ("Scheduled requests", "requested", requested),
+                ("Raw remaining", "remaining", remaining),
+            )
         if total <= 0:
             continue
-        not_allocatable = min(total, max(0, not_allocatable))
-        allocatable = total - not_allocatable
-        requested = min(allocatable, max(0, requested))
-        remaining = allocatable - requested
-        raw_remaining = min(remaining, max(0, raw_remaining))
-        values = (
-            ("Not allocatable to Pods", "not-allocatable", not_allocatable),
-            ("Scheduled requests", "requested", requested),
-            ("Raw remaining", "remaining", raw_remaining),
-        )
         position = 0.0
         segments = []
         for label, class_name, value in values:
@@ -882,8 +875,8 @@ def _capacity_charts(plan: Any) -> list[dict[str, Any]]:
                 "resource": resource,
                 "total_display": format_value(total),
                 "total_raw": format_raw(total),
-                "remaining_display": format_value(raw_remaining),
-                "remaining_raw": format_raw(raw_remaining),
+                "remaining_display": format_value(remaining),
+                "remaining_raw": format_raw(remaining),
                 "segments": segments,
             }
         )
@@ -895,9 +888,6 @@ def _trend_charts(plan: Any) -> list[dict[str, Any]]:
         return []
 
     points = plan.resource_trend.points
-    if any(point.total_capacity is None for point in points):
-        return []
-
     def chart_path(values: list[int | None], maximum: int) -> str:
         last_index = len(values) - 1
         segments: list[str] = []
@@ -921,14 +911,14 @@ def _trend_charts(plan: Any) -> list[dict[str, Any]]:
     )
     charts = []
     for resource, attribute, format_value, format_raw in resources:
-        capacities = [getattr(point.total_capacity, attribute) for point in points if point.total_capacity is not None]
+        capacities = [getattr(point.allocatable_after_reserve, attribute) for point in points]
         requests = [getattr(point.requested, attribute) for point in points]
         limits = [getattr(point.limits, attribute) for point in points]
         usage = [getattr(point.usage, attribute) if point.usage is not None else None for point in points]
         maximum = max([*capacities, *requests, *limits, *(value for value in usage if value is not None), 1])
         capacity_path = chart_path(capacities, maximum)
         latest = points[-1]
-        latest_capacity = getattr(latest.total_capacity, attribute) if latest.total_capacity is not None else 0
+        latest_capacity = getattr(latest.allocatable_after_reserve, attribute)
         latest_usage = getattr(latest.usage, attribute) if latest.usage is not None else None
         charts.append(
             {
@@ -1262,14 +1252,14 @@ _DASHBOARD_TEMPLATE = """
 {% else %}
   <div class="overview-dashboard">
     <section class="capacity-chart-panel" aria-labelledby="capacity-composition-title">
-      <header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From worker-node resources to raw remaining capacity</h2><p>Worker-node capacity, Kubernetes allocatable capacity, declared Pod requests, and raw remaining capacity from the latest snapshot.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>
-      {% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total worker-node capacity</small></div><div class="capacity-chart-outcome"><span>Raw remaining</span><strong>{{ chart.remaining_display }}</strong><small>{{ chart.remaining_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition"><title>{{ chart.resource }} capacity composition</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect worker-node capacity and render the capacity flow.</p>{% endif %}
-      <p class="capacity-chart-note"><strong>Worker Node Allocatable</strong> is the capacity Kubernetes makes available to Pods after node reservations. <strong>Raw remaining</strong> is Worker Node Allocatable minus scheduled Pod requests. <a href="{{ url_for('document_detail', document_id=plan.capacity_source.document_id) }}">Read the local Kubernetes guidance.</a></p>
+      <header class="capacity-chart-heading"><div><p class="eyebrow">Capacity flow</p><h2 id="capacity-composition-title">From worker allocatable capacity to remaining capacity</h2><p>Worker-node Kubernetes allocatable capacity after the configured reserve, declared Pod requests, and remaining planning capacity from the latest snapshot.</p></div><span class="capacity-chart-snapshot">Latest snapshot</span></header>
+      {% if capacity_charts %}<div class="capacity-chart-grid">{% for chart in capacity_charts %}<figure class="capacity-chart" aria-labelledby="capacity-chart-{{ chart.resource|lower }}"><figcaption><div><span id="capacity-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>{{ chart.total_display }}</strong><small>{{ chart.total_raw }} total worker allocatable after {{ plan.planning_reserve_percent }}% reserve</small></div><div class="capacity-chart-outcome"><span>Remaining after reserve</span><strong>{{ chart.remaining_display }}</strong><small>{{ chart.remaining_raw }}</small></div></figcaption><svg class="capacity-chart-bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} capacity composition after reserve"><title>{{ chart.resource }} capacity composition after reserve</title>{% for segment in chart.segments %}{% if segment.width > 0 %}<rect class="capacity-chart-segment {{ segment.class_name }}" x="{{ segment.x }}" y="0" width="{{ segment.width }}" height="14"><title>{{ segment.label }}: {{ segment.display }} ({{ segment.raw }})</title></rect>{% endif %}{% endfor %}</svg><ul class="capacity-chart-labels">{% for segment in chart.segments %}<li><span class="capacity-chart-swatch {{ segment.class_name }}" aria-hidden="true"></span><div><span>{{ segment.label }}</span><strong>{{ segment.display }}</strong><small>{{ segment.raw }}; {{ segment.share_label }} of total</small></div></li>{% endfor %}</ul></figure>{% endfor %}</div>{% else %}<p class="capacity-chart-empty">Take a new snapshot to collect worker-node capacity and render the capacity flow.</p>{% endif %}
+      <p class="capacity-chart-note"><strong>Planning Reserve setting:</strong> {{ plan.planning_reserve_percent }}% is subtracted from worker Node Allocatable before this Dashboard capacity flow is shown. Scheduled requests are factual declarations; actual usage is shown separately. <a href="{{ url_for('settings') }}">Review Settings.</a></p>
     </section>
 
     <section class="trend-panel" aria-labelledby="capacity-trend-title">
-      <header><div><p class="eyebrow">Resource trend</p><h2 id="capacity-trend-title">Actual use, requests, limits, and total capacity</h2><p>{{ plan.resource_trend.summary }}</p></div><ul class="trend-legend" aria-label="Trend legend"><li><span class="trend-legend-swatch total-capacity" aria-hidden="true"></span>Total capacity</li><li><span class="trend-legend-swatch requested" aria-hidden="true"></span>Requested</li><li><span class="trend-legend-swatch limits" aria-hidden="true"></span>Limits</li><li><span class="trend-legend-swatch actual-used" aria-hidden="true"></span>Actual used</li></ul></header>
-      {% if trend_charts %}<div class="trend-chart-grid">{% for chart in trend_charts %}<figure class="trend-chart" aria-labelledby="trend-chart-{{ chart.resource|lower }}"><figcaption><div><span id="trend-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>Actual used: {{ chart.latest_usage_display }}</strong><small>{{ chart.latest_usage_raw }}</small></div><div class="trend-chart-latest"><strong>{{ chart.latest_capacity_display }} total</strong><small>{{ chart.latest_requested_display }} requested | {{ chart.latest_limit_display }} limit</small></div></figcaption><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} actual usage, requests, limits, and total capacity trend"><path class="trend-capacity-area" d="{{ chart.capacity_area }}"></path><line class="trend-baseline" x1="0" y1="94" x2="100" y2="94"></line><path class="trend-request-line" d="{{ chart.request_path }}"></path><path class="trend-limit-line" d="{{ chart.limit_path }}"></path>{% if chart.usage_path %}<path class="trend-usage-line" d="{{ chart.usage_path }}"></path>{% endif %}</svg><div class="trend-axis"><span>{{ chart.first_date }}</span><span>{{ chart.latest_date }}</span></div></figure>{% endfor %}</div>{% else %}<p class="trend-empty">{{ plan.resource_trend.summary }}</p>{% endif %}
+      <header><div><p class="eyebrow">Resource trend</p><h2 id="capacity-trend-title">Actual use, requests, limits, and worker allocatable capacity</h2><p>{{ plan.resource_trend.summary }} The shaded area is worker Node Allocatable after the current {{ plan.planning_reserve_percent }}% Planning Reserve setting.</p></div><ul class="trend-legend" aria-label="Trend legend"><li><span class="trend-legend-swatch total-capacity" aria-hidden="true"></span>Worker allocatable after reserve</li><li><span class="trend-legend-swatch requested" aria-hidden="true"></span>Requested</li><li><span class="trend-legend-swatch limits" aria-hidden="true"></span>Limits</li><li><span class="trend-legend-swatch actual-used" aria-hidden="true"></span>Actual used</li></ul></header>
+      {% if trend_charts %}<div class="trend-chart-grid">{% for chart in trend_charts %}<figure class="trend-chart" aria-labelledby="trend-chart-{{ chart.resource|lower }}"><figcaption><div><span id="trend-chart-{{ chart.resource|lower }}">{{ chart.resource }}</span><strong>Actual used: {{ chart.latest_usage_display }}</strong><small>{{ chart.latest_usage_raw }}</small></div><div class="trend-chart-latest"><strong>{{ chart.latest_capacity_display }} allocatable after reserve</strong><small>{{ chart.latest_requested_display }} requested | {{ chart.latest_limit_display }} limit</small></div></figcaption><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ chart.resource }} actual usage, requests, limits, and worker allocatable capacity after reserve trend"><path class="trend-capacity-area" d="{{ chart.capacity_area }}"></path><line class="trend-baseline" x1="0" y1="94" x2="100" y2="94"></line><path class="trend-request-line" d="{{ chart.request_path }}"></path><path class="trend-limit-line" d="{{ chart.limit_path }}"></path>{% if chart.usage_path %}<path class="trend-usage-line" d="{{ chart.usage_path }}"></path>{% endif %}</svg><div class="trend-axis"><span>{{ chart.first_date }}</span><span>{{ chart.latest_date }}</span></div></figure>{% endfor %}</div>{% else %}<p class="trend-empty">{{ plan.resource_trend.summary }}</p>{% endif %}
     </section>
 
     <section class="capacity-chart-panel namespace-resource-panel" aria-labelledby="namespace-resources-title">

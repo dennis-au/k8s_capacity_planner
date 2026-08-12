@@ -123,7 +123,7 @@ class DashboardTests(unittest.TestCase):
         refreshed = self.client.post("/collect", data={"csrf_token": csrf}, follow_redirects=True)
         self.assertIn("Snapshot 1 collected", refreshed.text)
         self.assertNotIn("Current capacity decision", refreshed.text)
-        self.assertIn("Raw remaining", refreshed.text)
+        self.assertIn("Remaining after reserve", refreshed.text)
 
         nodes = self.client.get("/nodes")
         self.assertIn("worker-a", nodes.text)
@@ -182,21 +182,20 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Dashboard", collected.text)
         self.assertNotIn("Current capacity decision", collected.text)
         self.assertNotIn("Capacity Available", collected.text)
-        self.assertIn("Raw remaining", collected.text)
+        self.assertIn("Remaining after reserve", collected.text)
         self.assertIn('class="overview-dashboard"', collected.text)
-        self.assertIn("Worker Node Allocatable", collected.text)
-        self.assertIn("total worker-node capacity", collected.text)
-        self.assertIn("Not allocatable to Pods", collected.text)
+        self.assertIn("Planning Reserve setting", collected.text)
         self.assertIn('class="capacity-chart-panel"', collected.text)
-        self.assertIn("From worker-node resources to raw remaining capacity", collected.text)
+        self.assertIn("From worker allocatable capacity to remaining capacity", collected.text)
         self.assertIn("Scheduled requests", collected.text)
-        self.assertIn("Raw remaining", collected.text)
-        self.assertIn('aria-label="CPU capacity composition"', collected.text)
-        self.assertIn('aria-label="Memory capacity composition"', collected.text)
-        self.assertIn("2,500m", collected.text)
-        self.assertIn("3,221,225,472 B", collected.text)
+        self.assertIn("Remaining after reserve", collected.text)
+        self.assertIn('aria-label="CPU capacity composition after reserve"', collected.text)
+        self.assertIn('aria-label="Memory capacity composition after reserve"', collected.text)
+        self.assertNotIn("2,500m total worker-node capacity", collected.text)
         self.assertNotIn("3,500m", collected.text)
-        self.assertIn('href="/docs/node-allocatable"', collected.text)
+        self.assertIn("1,600m total worker allocatable after 20% reserve", collected.text)
+        self.assertIn("Planning Reserve setting", collected.text)
+        self.assertIn('href="/settings"', collected.text)
         self.assertIn("namespace-resource-panel", collected.text)
         self.assertIn("Namespace resources", collected.text)
         self.assertIn("Actual used", collected.text)
@@ -278,8 +277,8 @@ class DashboardTests(unittest.TestCase):
         dashboard = self.client.get("/")
 
         self.assertIn("Resource trend", dashboard.text)
-        self.assertIn("Actual use, requests, limits, and total capacity", dashboard.text)
-        self.assertIn("Total capacity", dashboard.text)
+        self.assertIn("Actual use, requests, limits, and worker allocatable capacity", dashboard.text)
+        self.assertIn("Worker allocatable after reserve", dashboard.text)
         self.assertIn("Requested", dashboard.text)
         self.assertIn("Limits", dashboard.text)
         self.assertIn("Actual used", dashboard.text)
@@ -289,7 +288,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('class="trend-limit-line"', dashboard.text)
         self.assertIn('class="trend-usage-line"', dashboard.text)
         self.assertIn("2 snapshots", dashboard.text)
-        self.assertNotIn("Planning-safe capacity", dashboard.text)
+        self.assertIn("Planning Reserve setting", dashboard.text)
 
     def test_first_login_has_no_cluster_until_a_kubeconfig_is_added(self) -> None:
         login = self.client.get("/login")
@@ -536,6 +535,34 @@ class DashboardTests(unittest.TestCase):
             },
         )
         self.assertEqual(invalid_csrf.status_code, 400)
+
+    def test_dashboard_uses_the_configured_planning_reserve_for_worker_allocatable_capacity(self) -> None:
+        login = self.client.get("/login")
+        self.client.post(
+            "/login",
+            data={"username": "admin", "password": "correct horse battery staple", "csrf_token": _csrf(login.text)},
+        )
+        kubeconfig = _write_kubeconfig(Path(self.temp_dir.name), "configured", "https://kubernetes.darksite.local:6443")
+        self.store.create_cluster("Production", str(kubeconfig), "configured", "https://kubernetes.darksite.local:6443")
+        overview = self.client.get("/")
+        self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
+
+        settings = self.client.get("/settings")
+        self.client.post(
+            "/settings",
+            data={
+                "csrf_token": _csrf(settings.text),
+                "snapshot_interval_minutes": "60",
+                "retention_days": "90",
+                "planning_reserve_percent": "25",
+            },
+            follow_redirects=True,
+        )
+
+        dashboard = self.client.get("/")
+
+        self.assertIn("1,500m total worker allocatable after 25% reserve", dashboard.text)
+        self.assertIn("current 25% Planning Reserve setting", dashboard.text)
 
     def test_cluster_connection_can_be_saved_from_the_dashboard(self) -> None:
         kubeconfig = _write_kubeconfig(
@@ -1013,8 +1040,8 @@ class DashboardTests(unittest.TestCase):
         self.client.post("/collect", data={"csrf_token": _csrf(overview.text)}, follow_redirects=True)
 
         dashboard = self.client.get("/")
-        self.assertIn("From worker-node resources to raw remaining capacity", dashboard.text)
-        self.assertIn("Raw remaining", dashboard.text)
+        self.assertIn("From worker allocatable capacity to remaining capacity", dashboard.text)
+        self.assertIn("Remaining after reserve", dashboard.text)
         self.assertNotIn("Next action", dashboard.text)
         self.assertNotIn("Management follow-up", dashboard.text)
         self.assertNotIn("Items that need attention", dashboard.text)
